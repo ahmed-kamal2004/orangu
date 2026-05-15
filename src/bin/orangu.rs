@@ -31,7 +31,7 @@ use std::{
     collections::HashMap,
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::ExitCode,
     time::{Duration, Instant},
 };
@@ -86,9 +86,7 @@ async fn run() -> Result<()> {
         }
     };
     let config = load_client_configuration(&config_path)?;
-    let workspace = args
-        .workspace
-        .unwrap_or(std::env::current_dir().context("failed to resolve current directory")?);
+    let workspace = resolve_workspace_root(args.workspace)?;
     let tools = ToolExecutor::new(&workspace);
 
     let model_names = sorted_model_names(&config.llms);
@@ -1031,6 +1029,33 @@ fn history_file_path() -> Result<PathBuf> {
     Ok(home.join(HISTORY_DIRECTORY).join(HISTORY_FILE))
 }
 
+fn resolve_workspace_root(workspace: Option<PathBuf>) -> Result<PathBuf> {
+    let current_dir = std::env::current_dir().context("failed to resolve current directory")?;
+    let workspace = workspace.unwrap_or_else(|| current_dir.clone());
+    let absolute = if workspace.is_absolute() {
+        workspace
+    } else {
+        current_dir.join(workspace)
+    };
+    Ok(normalize_path(&absolute))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => result.push(prefix.as_os_str()),
+            Component::RootDir => result.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::Normal(part) => result.push(part),
+        }
+    }
+    result
+}
+
 fn load_history(path: &Path) -> Result<Vec<String>> {
     match fs::read_to_string(path) {
         Ok(content) => Ok(content
@@ -1083,4 +1108,28 @@ fn format_tools(tools: &ToolExecutor) -> String {
         .map(|tool| format!("- {}: {}", tool.function.name, tool.function.description))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_workspace_root;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolve_workspace_root_makes_relative_paths_absolute() {
+        let current_dir = std::env::current_dir().expect("current directory");
+        let resolved = resolve_workspace_root(Some(PathBuf::from("."))).expect("workspace");
+
+        assert_eq!(resolved, current_dir);
+        assert!(resolved.is_absolute());
+    }
+
+    #[test]
+    fn resolve_workspace_root_normalizes_parent_segments() {
+        let current_dir = std::env::current_dir().expect("current directory");
+        let resolved =
+            resolve_workspace_root(Some(PathBuf::from("src/../tests"))).expect("workspace");
+
+        assert_eq!(resolved, current_dir.join("tests"));
+    }
 }
