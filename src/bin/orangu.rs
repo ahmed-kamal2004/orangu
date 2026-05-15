@@ -166,6 +166,9 @@ async fn run() -> Result<()> {
         if trimmed.is_empty() {
             continue;
         }
+        if trimmed.starts_with('\\') {
+            continue;
+        }
 
         history.push(trimmed.to_string());
         append_history_entry(&history_path, trimmed)?;
