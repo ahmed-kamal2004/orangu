@@ -25,7 +25,7 @@ use orangu::{
     llm::normalized_openai_endpoint,
     session::ChatSession,
     tools::{ToolExecutor, resolve_workspace_path},
-    tui::{HeaderStatus, help_text, render_screen},
+    tui::{HeaderStatus, help_text, render_screen, render_thinking_frame},
 };
 use serde::Deserialize;
 use std::{
@@ -43,6 +43,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const TERMINAL_TITLE: &str = "orangu";
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const CTRL_C_EXIT_MESSAGE: &str = "Press Ctrl+c again to quit";
+const THINKING_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const HISTORY_DIRECTORY: &str = ".orangu";
 const HISTORY_FILE: &str = "orangu.history";
 const COMMANDS: &[&str] = &[
@@ -1276,8 +1277,10 @@ async fn wait_for_response(
     transcript: &[String],
 ) -> Result<String> {
     let mut prompt_future = Box::pin(session.prompt(user_input, profile, tools));
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
-    let mut thinking_visible = true;
+    let mut interval = tokio::time::interval(THINKING_FRAME_INTERVAL);
+    let mut thinking_frame = 0usize;
+    let thinking_started = Instant::now();
+    let initial_frame = render_thinking_frame(thinking_frame, thinking_started.elapsed());
 
     print_screen(
         current_model,
@@ -1285,7 +1288,7 @@ async fn wait_for_response(
         workspace,
         header_status,
         transcript,
-        Some("Thinking"),
+        Some(initial_frame.as_str()),
         "",
         0,
     );
@@ -1295,23 +1298,20 @@ async fn wait_for_response(
         tokio::select! {
             result = &mut prompt_future => return result,
             _ = interval.tick() => {
-                let pending_line = if thinking_visible {
-                    Some("Thinking")
-                } else {
-                    Some("")
-                };
+                thinking_frame = thinking_frame.wrapping_add(1);
+                let pending_line =
+                    render_thinking_frame(thinking_frame, thinking_started.elapsed());
                 print_screen(
                     current_model,
                     endpoint,
                     workspace,
                     header_status,
                     transcript,
-                    pending_line,
+                    Some(pending_line.as_str()),
                     "",
                     0,
                 );
                 std::io::stdout().flush()?;
-                thinking_visible = !thinking_visible;
             }
         }
     }

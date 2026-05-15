@@ -20,6 +20,7 @@ use rustyline::{
     hint::Hinter,
     validate::{ValidationContext, ValidationResult, Validator},
 };
+use std::time::Duration;
 use terminal_size::{Height, Width, terminal_size};
 
 pub fn editor_config() -> Config {
@@ -40,7 +41,10 @@ const CLIENT_LOGO_ART: &[&str] = &[
 const ORANGU_BROWN: &str = "\x1b[38;2;139;90;43m";
 const STATUS_GREEN: &str = "\x1b[38;2;80;200;120m";
 const STATUS_RED: &str = "\x1b[38;2;220;80;80m";
+const THINKING_TIMER: &str = "\x1b[2m";
 const ANSI_RESET: &str = "\x1b[0m";
+const THINKING_TEXT: &str = "Thinking";
+const THINKING_SHADE_LEVELS: &[u8] = &[230, 210, 190, 170, 150, 130, 110, 90];
 
 #[derive(Debug, Clone, Copy)]
 pub struct HeaderStatus {
@@ -176,6 +180,39 @@ pub fn render_screen(
         height,
     ));
     screen
+}
+
+pub fn render_thinking_frame(frame: usize, elapsed: Duration) -> String {
+    let mut rendered = String::new();
+    let offset = frame % THINKING_SHADE_LEVELS.len();
+
+    for (index, ch) in THINKING_TEXT.chars().enumerate() {
+        let shade_index =
+            (index + THINKING_SHADE_LEVELS.len() - offset) % THINKING_SHADE_LEVELS.len();
+        let shade = THINKING_SHADE_LEVELS[shade_index];
+        rendered.push_str(&format!("\x1b[38;2;{shade};{shade};{shade}m{ch}"));
+    }
+    rendered.push_str(ANSI_RESET);
+    rendered.push(' ');
+    rendered.push_str(THINKING_TIMER);
+    rendered.push_str(&format_elapsed_timer(elapsed));
+    rendered.push_str(ANSI_RESET);
+
+    rendered
+}
+
+fn format_elapsed_timer(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("({hours}h{minutes}m{seconds}s)")
+    } else if minutes > 0 {
+        format!("({minutes}m{seconds}s)")
+    } else {
+        format!("({seconds}s)")
+    }
 }
 
 fn indicator(ok: bool) -> String {
@@ -387,5 +424,28 @@ impl Completer for OranguHelper {
         }
 
         self.file_completer.complete(line, pos, ctx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ANSI_RESET, THINKING_TEXT, render_thinking_frame};
+    use std::time::Duration;
+
+    #[test]
+    fn thinking_frames_roll_across_characters() {
+        let frame_zero = render_thinking_frame(0, Duration::from_secs(61));
+        let frame_one = render_thinking_frame(1, Duration::from_secs(61));
+
+        assert!(frame_zero.contains('T'));
+        assert!(frame_zero.contains('g'));
+        assert!(frame_zero.ends_with(ANSI_RESET));
+        assert!(frame_one.ends_with(ANSI_RESET));
+        assert_ne!(frame_zero, frame_one);
+        assert!(frame_zero.contains("(1m1s)"));
+        assert!(frame_one.contains("(1m1s)"));
+        for ch in THINKING_TEXT.chars() {
+            assert!(frame_zero.contains(ch));
+        }
     }
 }
