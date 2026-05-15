@@ -1,0 +1,45 @@
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.6;
+  margin: 0 auto;
+  max-width: 56rem;
+  padding: 2rem;
+  color: #1f1f1f;
+}
+
+.frontpage-orangu {
+  background: #8b5a2b;
+  color: #ffffff;
+  border-radius: 18px;
+  min-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 4rem 2rem;
+  margin-bottom: 3rem;
+}
+
+.frontpage-orangu h1,
+.frontpage-orangu h2,
+.frontpage-orangu p {
+  color: #ffffff;
+}
+
+.frontpage-orangu .wordmark {
+  font-size: 4rem;
+  font-weight: 800;
+  letter-spacing: 0.3rem;
+  margin-bottom: 1rem;
+}
+
+.frontpage-orangu .tagline {
+  font-size: 1.4rem;
+  max-width: 38rem;
+}
+
+code,
+pre {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
