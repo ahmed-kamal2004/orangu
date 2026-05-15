@@ -27,6 +27,8 @@ orangu
 
 By default, local tools operate on the **current working directory**. Use `--workspace` to point at another root.
 
+Use `/open_file README.md` to launch a workspace file in the editor configured by `$EDITOR`. Natural-language equivalents such as `open README.md`, `list models`, and `show help` are also handled locally.
+
 ## Community
 
 Contributions to [**orangu**](https://github.com/mnemosyne-systems/orangu) are managed on Git Hub.

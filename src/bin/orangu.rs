@@ -19,11 +19,12 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use orangu::{
     config::{LlmConfiguration, default_client_config_path, load_client_configuration},
     llm::normalized_openai_endpoint,
     session::ChatSession,
-    tools::ToolExecutor,
+    tools::{ToolExecutor, resolve_workspace_path},
     tui::{HeaderStatus, help_text, render_screen},
 };
 use serde::Deserialize;
@@ -35,6 +36,7 @@ use std::{
     process::ExitCode,
     time::{Duration, Instant},
 };
+use walkdir::WalkDir;
 
 const CLEAR_TERMINAL_SEQUENCE: &str = "\x1b[2J\x1b[H";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -51,6 +53,7 @@ const COMMANDS: &[&str] = &[
     "/list-models",
     "/tools",
     "/model",
+    "/open_file",
     "/clear",
     "/quit",
 ];
@@ -306,6 +309,21 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
+    }
+}
+
+struct RawModePauseGuard;
+
+impl RawModePauseGuard {
+    fn new() -> Result<Self> {
+        disable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModePauseGuard {
+    fn drop(&mut self) {
+        let _ = enable_raw_mode();
     }
 }
 
@@ -689,6 +707,14 @@ fn completion_candidates(
     let cursor = cursor.min(input.len());
     let prefix = &input[..cursor];
 
+    if let Some((start, path_prefix)) = open_file_completion_prefix(prefix) {
+        return Some((
+            start,
+            cursor,
+            open_file_completion_candidates(path_prefix, workspace),
+        ));
+    }
+
     if let Some(model_prefix) = prefix.strip_prefix("/model ") {
         return Some((
             7,
@@ -728,6 +754,7 @@ fn file_completion_candidates(token: &str, workspace: &std::path::Path) -> Vec<S
         Some((directory, prefix)) => (directory, prefix),
         None => ("", token),
     };
+    let gitignore = workspace_gitignore(workspace);
     let search_dir = if directory.is_empty() {
         workspace.to_path_buf()
     } else {
@@ -741,16 +768,22 @@ fn file_completion_candidates(token: &str, workspace: &std::path::Path) -> Vec<S
     let mut matches = entries
         .flatten()
         .filter_map(|entry| {
+            let entry_type = entry.file_type().ok()?;
+            if !should_include_completion_path(
+                workspace,
+                &entry.path(),
+                entry_type.is_dir(),
+                gitignore.as_ref(),
+            ) {
+                return None;
+            }
+
             let file_name = entry.file_name().to_string_lossy().to_string();
             if !file_name.starts_with(prefix) {
                 return None;
             }
 
-            let suffix = if entry.file_type().ok()?.is_dir() {
-                "/"
-            } else {
-                ""
-            };
+            let suffix = if entry_type.is_dir() { "/" } else { "" };
             Some(if directory.is_empty() {
                 format!("{file_name}{suffix}")
             } else {
@@ -760,6 +793,97 @@ fn file_completion_candidates(token: &str, workspace: &std::path::Path) -> Vec<S
         .collect::<Vec<_>>();
     matches.sort();
     matches
+}
+
+fn open_file_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
+    if let Some(path_prefix) = prefix.strip_prefix("/open_file ") {
+        return Some(("/open_file ".len(), path_prefix));
+    }
+
+    for command_prefix in ["open file ", "open ", "edit file ", "edit "] {
+        if let Some(path_prefix) = strip_ascii_prefix(prefix, command_prefix) {
+            return Some((prefix.len() - path_prefix.len(), path_prefix));
+        }
+    }
+
+    None
+}
+
+fn open_file_completion_candidates(token: &str, workspace: &Path) -> Vec<String> {
+    let (quoted, token) = match token.chars().next() {
+        Some(quote @ '"') | Some(quote @ '\'') => (Some(quote), &token[quote.len_utf8()..]),
+        _ => (None, token),
+    };
+    let gitignore = workspace_gitignore(workspace);
+
+    let mut matches = WalkDir::new(workspace)
+        .into_iter()
+        .filter_entry(|entry| {
+            should_include_completion_path(
+                workspace,
+                entry.path(),
+                entry.file_type().is_dir(),
+                gitignore.as_ref(),
+            )
+        })
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(workspace).ok()?;
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let file_name = entry.file_name().to_string_lossy();
+            if !open_file_completion_matches(&relative, &file_name, token) {
+                return None;
+            }
+
+            Some(match quoted {
+                Some(quote) => format!("{quote}{relative}"),
+                None => relative,
+            })
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches
+}
+
+fn open_file_completion_matches(relative: &str, file_name: &str, token: &str) -> bool {
+    token.is_empty()
+        || relative.starts_with(token)
+        || (!token.contains('/') && file_name.starts_with(token))
+}
+
+fn workspace_gitignore(workspace: &Path) -> Option<Gitignore> {
+    let mut builder = GitignoreBuilder::new(workspace);
+    let gitignore_path = workspace.join(".gitignore");
+    if gitignore_path.is_file() {
+        builder.add(gitignore_path);
+    }
+    builder.build().ok()
+}
+
+fn should_include_completion_path(
+    workspace: &Path,
+    path: &Path,
+    is_dir: bool,
+    gitignore: Option<&Gitignore>,
+) -> bool {
+    let Ok(relative) = path.strip_prefix(workspace) else {
+        return false;
+    };
+    if relative.as_os_str().is_empty() {
+        return true;
+    }
+
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    if relative == ".git" || relative.starts_with(".git/") {
+        return false;
+    }
+
+    gitignore.is_none_or(|matcher| {
+        !matcher
+            .matched_path_or_any_parents(path, is_dir)
+            .is_ignore()
+    })
 }
 
 fn previous_boundary(input: &str, cursor: usize) -> Option<usize> {
@@ -785,6 +909,21 @@ enum CommandOutcome {
     Quit,
 }
 
+enum LocalCommand<'a> {
+    Help,
+    ConnectDefault,
+    ConnectTo(&'a str),
+    Disconnect,
+    Reload,
+    ListModels,
+    Tools,
+    ModelInfo,
+    SetModel(&'a str),
+    OpenFile(&'a str),
+    Clear,
+    Quit,
+}
+
 fn handle_command(
     input: &str,
     active_model: &mut String,
@@ -796,83 +935,292 @@ fn handle_command(
     tools: &ToolExecutor,
     workspace: &std::path::Path,
 ) -> Result<CommandOutcome> {
-    if input == "/help" {
-        return Ok(CommandOutcome::Output(help_text().to_string()));
-    }
-    if input == "/list-models" {
-        return Ok(CommandOutcome::Output(format_models(llms)));
-    }
-    if input == "/tools" {
-        return Ok(CommandOutcome::Output(format_tools(tools)));
-    }
-    if input == "/clear" {
-        let prompt = system_prompt(
-            llms.get(active_model)
-                .ok_or_else(|| anyhow!("unknown model profile '{active_model}'"))?,
-        );
-        session.clear(prompt);
-        return Ok(CommandOutcome::Cleared);
-    }
-    if input == "/model" {
-        return Ok(CommandOutcome::Output(
+    let Some(command) = parse_local_command(input) else {
+        return Ok(CommandOutcome::Unhandled);
+    };
+
+    match command {
+        LocalCommand::Help => Ok(CommandOutcome::Output(help_text().to_string())),
+        LocalCommand::ConnectDefault => {
+            let endpoint = llms
+                .get(active_model)
+                .ok_or_else(|| anyhow!("unknown model profile '{active_model}'"))?
+                .endpoint
+                .clone();
+            *current_endpoint = Some(endpoint.clone());
+            Ok(CommandOutcome::Output(format!("Connected to '{endpoint}'")))
+        }
+        LocalCommand::ConnectTo(endpoint) => {
+            *current_endpoint = Some(endpoint.to_string());
+            Ok(CommandOutcome::Output(format!("Connected to '{endpoint}'")))
+        }
+        LocalCommand::Disconnect => Ok(CommandOutcome::Output({
+            *current_endpoint = None;
+            "Disconnected from the current server target".to_string()
+        })),
+        LocalCommand::Reload => {
+            *active_model = startup_model.to_string();
+            *current_endpoint = Some(startup_endpoint.to_string());
+            let prompt = system_prompt(
+                llms.get(startup_model)
+                    .ok_or_else(|| anyhow!("unknown model profile '{startup_model}'"))?,
+            );
+            session.clear(prompt);
+            Ok(CommandOutcome::Output(format!(
+                "Reloaded startup configuration: model '{startup_model}', server '{startup_endpoint}'"
+            )))
+        }
+        LocalCommand::ListModels => Ok(CommandOutcome::Output(format_models(llms))),
+        LocalCommand::Tools => Ok(CommandOutcome::Output(format_tools(tools))),
+        LocalCommand::ModelInfo => Ok(CommandOutcome::Output(
             "Use /list-models to see configured profiles".to_string(),
-        ));
-    }
-    if let Some(name) = input.strip_prefix("/model ") {
-        let name = name.trim();
-        if !llms.contains_key(name) {
-            return Ok(CommandOutcome::Output(format!(
-                "Unknown model profile '{name}'. Available: {}",
-                sorted_model_names(llms).join(", ")
-            )));
+        )),
+        LocalCommand::SetModel(name) => {
+            if !llms.contains_key(name) {
+                return Ok(CommandOutcome::Output(format!(
+                    "Unknown model profile '{name}'. Available: {}",
+                    sorted_model_names(llms).join(", ")
+                )));
+            }
+            *active_model = name.to_string();
+            session.set_system_prompt(system_prompt(&llms[name]));
+            Ok(CommandOutcome::Output(format!(
+                "Switched to model profile '{name}'"
+            )))
         }
-        *active_model = name.to_string();
-        session.set_system_prompt(system_prompt(&llms[name]));
-        return Ok(CommandOutcome::Output(format!(
-            "Switched to model profile '{name}'"
-        )));
-    }
-    if input == "/connect" {
-        let endpoint = llms
-            .get(active_model)
-            .ok_or_else(|| anyhow!("unknown model profile '{active_model}'"))?
-            .endpoint
-            .clone();
-        *current_endpoint = Some(endpoint.clone());
-        return Ok(CommandOutcome::Output(format!("Connected to '{endpoint}'")));
-    }
-    if let Some(endpoint) = input.strip_prefix("/connect ") {
-        let endpoint = endpoint.trim();
-        if endpoint.is_empty() {
-            return Ok(CommandOutcome::Output("Usage: /connect [url]".to_string()));
+        LocalCommand::OpenFile(path) => {
+            open_in_editor(workspace, path)?;
+            Ok(CommandOutcome::Output(format!("Opened {}", path)))
         }
-        *current_endpoint = Some(endpoint.to_string());
-        return Ok(CommandOutcome::Output(format!("Connected to '{endpoint}'")));
+        LocalCommand::Clear => {
+            let prompt = system_prompt(
+                llms.get(active_model)
+                    .ok_or_else(|| anyhow!("unknown model profile '{active_model}'"))?,
+            );
+            session.clear(prompt);
+            Ok(CommandOutcome::Cleared)
+        }
+        LocalCommand::Quit => Ok(CommandOutcome::Quit),
     }
-    if input == "/disconnect" {
-        *current_endpoint = None;
-        return Ok(CommandOutcome::Output(
-            "Disconnected from the current server target".to_string(),
-        ));
-    }
-    if input == "/reload" {
-        *active_model = startup_model.to_string();
-        *current_endpoint = Some(startup_endpoint.to_string());
-        let prompt = system_prompt(
-            llms.get(startup_model)
-                .ok_or_else(|| anyhow!("unknown model profile '{startup_model}'"))?,
-        );
-        session.clear(prompt);
-        return Ok(CommandOutcome::Output(format!(
-            "Reloaded startup configuration: model '{startup_model}', server '{startup_endpoint}'"
-        )));
-    }
-    if input == "/quit" {
-        return Ok(CommandOutcome::Quit);
+}
+
+fn parse_local_command(input: &str) -> Option<LocalCommand<'_>> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
     }
 
-    let _ = workspace;
-    Ok(CommandOutcome::Unhandled)
+    parse_slash_command(input).or_else(|| parse_natural_language_command(input))
+}
+
+fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
+    match input {
+        "/help" => Some(LocalCommand::Help),
+        "/connect" => Some(LocalCommand::ConnectDefault),
+        "/disconnect" => Some(LocalCommand::Disconnect),
+        "/reload" => Some(LocalCommand::Reload),
+        "/list-models" => Some(LocalCommand::ListModels),
+        "/tools" => Some(LocalCommand::Tools),
+        "/model" => Some(LocalCommand::ModelInfo),
+        "/clear" => Some(LocalCommand::Clear),
+        "/quit" => Some(LocalCommand::Quit),
+        _ => {
+            if let Some(endpoint) = input.strip_prefix("/connect ") {
+                return Some(LocalCommand::ConnectTo(endpoint.trim()));
+            }
+            if let Some(name) = input.strip_prefix("/model ") {
+                return Some(LocalCommand::SetModel(name.trim()));
+            }
+            parse_open_file_target(input, "/open_file ").map(LocalCommand::OpenFile)
+        }
+    }
+}
+
+fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
+    if matches_ci(
+        input,
+        &[
+            "help",
+            "show help",
+            "show commands",
+            "show available commands",
+        ],
+    ) {
+        return Some(LocalCommand::Help);
+    }
+    if matches_ci(input, &["connect", "reconnect"]) {
+        return Some(LocalCommand::ConnectDefault);
+    }
+    if let Some(endpoint) = strip_ascii_prefix(input, "connect to ") {
+        return Some(LocalCommand::ConnectTo(endpoint.trim()));
+    }
+    if matches_ci(input, &["disconnect"]) {
+        return Some(LocalCommand::Disconnect);
+    }
+    if matches_ci(input, &["reload", "reload configuration", "reset session"]) {
+        return Some(LocalCommand::Reload);
+    }
+    if matches_ci(
+        input,
+        &[
+            "list models",
+            "show models",
+            "show available models",
+            "models",
+        ],
+    ) {
+        return Some(LocalCommand::ListModels);
+    }
+    if matches_ci(
+        input,
+        &["show tools", "list tools", "show local tools", "tools"],
+    ) {
+        return Some(LocalCommand::Tools);
+    }
+    if matches_ci(
+        input,
+        &[
+            "show model",
+            "current model",
+            "what model am i using",
+            "model",
+        ],
+    ) {
+        return Some(LocalCommand::ModelInfo);
+    }
+    for prefix in [
+        "use model ",
+        "switch model to ",
+        "set model to ",
+        "select model ",
+    ] {
+        if let Some(name) = strip_ascii_prefix(input, prefix) {
+            return Some(LocalCommand::SetModel(name.trim()));
+        }
+    }
+    if let Some(path) = parse_open_file_target(input, "/open_file ") {
+        return Some(LocalCommand::OpenFile(path));
+    }
+    for prefix in ["open file ", "open ", "edit file ", "edit "] {
+        if let Some(path) = parse_open_file_target(input, prefix) {
+            return Some(LocalCommand::OpenFile(path));
+        }
+    }
+    if matches_ci(
+        input,
+        &["clear", "clear conversation", "reset conversation"],
+    ) {
+        return Some(LocalCommand::Clear);
+    }
+    if matches_ci(input, &["quit", "exit"]) {
+        return Some(LocalCommand::Quit);
+    }
+
+    None
+}
+
+fn parse_open_file_target<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    let path = strip_ascii_prefix(input, prefix)?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    Some(strip_matching_quotes(path))
+}
+
+fn strip_ascii_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
+    if input.len() >= prefix.len() && input[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&input[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn matches_ci(input: &str, options: &[&str]) -> bool {
+    options
+        .iter()
+        .any(|option| input.eq_ignore_ascii_case(option))
+}
+
+fn strip_matching_quotes(input: &str) -> &str {
+    if input.len() >= 2 {
+        let bytes = input.as_bytes();
+        let first = bytes[0];
+        let last = bytes[input.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return &input[1..input.len() - 1];
+        }
+    }
+    input
+}
+
+fn open_in_editor(workspace: &Path, raw_path: &str) -> Result<()> {
+    let editor = std::env::var("EDITOR").context("EDITOR is not set")?;
+    let editor_parts = shell_words(&editor)?;
+    let path = resolve_workspace_path(workspace, raw_path)?;
+    let (program, args) = editor_parts
+        .split_first()
+        .ok_or_else(|| anyhow!("EDITOR is empty"))?;
+
+    let _raw_mode_pause_guard = RawModePauseGuard::new()?;
+    let _child = std::process::Command::new(program)
+        .args(args)
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch editor '{}'", editor))?;
+
+    Ok(())
+}
+
+fn shell_words(input: &str) -> Result<Vec<String>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quote = None;
+
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(active_quote) => {
+                if ch == active_quote {
+                    quote = None;
+                } else if ch == '\\' && active_quote == '"' {
+                    if let Some(escaped) = chars.next() {
+                        current.push(escaped);
+                    }
+                } else {
+                    current.push(ch);
+                }
+            }
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+            }
+            None if ch == '\\' => {
+                if let Some(escaped) = chars.next() {
+                    current.push(escaped);
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+
+    if quote.is_some() {
+        return Err(anyhow!("EDITOR contains unterminated quotes"));
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    if words.is_empty() {
+        return Err(anyhow!("EDITOR is empty"));
+    }
+
+    Ok(words)
 }
 
 fn system_prompt(profile: &LlmConfiguration) -> &str {
@@ -1112,8 +1460,12 @@ fn format_tools(tools: &ToolExecutor) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_workspace_root;
-    use std::path::PathBuf;
+    use super::{
+        LocalCommand, completion_candidates, parse_local_command, resolve_workspace_root,
+        shell_words,
+    };
+    use std::{fs, path::PathBuf};
+    use tempfile::tempdir;
 
     #[test]
     fn resolve_workspace_root_makes_relative_paths_absolute() {
@@ -1131,5 +1483,124 @@ mod tests {
             resolve_workspace_root(Some(PathBuf::from("src/../tests"))).expect("workspace");
 
         assert_eq!(resolved, current_dir.join("tests"));
+    }
+
+    #[test]
+    fn parses_open_file_commands() {
+        match parse_local_command("/open_file README.md") {
+            Some(LocalCommand::OpenFile(path)) => assert_eq!(path, "README.md"),
+            _ => panic!("expected open file slash command"),
+        }
+        match parse_local_command("Open README.md") {
+            Some(LocalCommand::OpenFile(path)) => assert_eq!(path, "README.md"),
+            _ => panic!("expected open file natural language command"),
+        }
+        match parse_local_command("open \"docs/user guide.md\"") {
+            Some(LocalCommand::OpenFile(path)) => assert_eq!(path, "docs/user guide.md"),
+            _ => panic!("expected quoted natural language open file command"),
+        }
+    }
+
+    #[test]
+    fn parses_natural_language_command_aliases() {
+        assert!(matches!(
+            parse_local_command("show commands"),
+            Some(LocalCommand::Help)
+        ));
+        assert!(matches!(
+            parse_local_command("list models"),
+            Some(LocalCommand::ListModels)
+        ));
+        assert!(matches!(
+            parse_local_command("show tools"),
+            Some(LocalCommand::Tools)
+        ));
+        assert!(matches!(
+            parse_local_command("disconnect"),
+            Some(LocalCommand::Disconnect)
+        ));
+        assert!(matches!(
+            parse_local_command("reset conversation"),
+            Some(LocalCommand::Clear)
+        ));
+        assert!(matches!(
+            parse_local_command("exit"),
+            Some(LocalCommand::Quit)
+        ));
+    }
+
+    #[test]
+    fn parses_natural_language_commands_with_arguments() {
+        match parse_local_command("connect to http://localhost:8080/v1") {
+            Some(LocalCommand::ConnectTo(endpoint)) => {
+                assert_eq!(endpoint, "http://localhost:8080/v1")
+            }
+            _ => panic!("expected connect command"),
+        }
+        match parse_local_command("switch model to local") {
+            Some(LocalCommand::SetModel(name)) => assert_eq!(name, "local"),
+            _ => panic!("expected set model command"),
+        }
+    }
+
+    #[test]
+    fn leaves_regular_prompts_unhandled() {
+        assert!(parse_local_command("help me understand this code").is_none());
+        assert!(parse_local_command("show me the files in the workspace").is_none());
+    }
+
+    #[test]
+    fn completes_open_file_commands_across_workspace() {
+        let workspace = tempdir().expect("workspace");
+        fs::write(workspace.path().join("README.md"), "").expect("root readme");
+        fs::create_dir(workspace.path().join("doc")).expect("doc dir");
+        fs::write(workspace.path().join("doc/README.md"), "").expect("doc readme");
+        fs::write(workspace.path().join(".gitignore"), "ignored.md\n").expect("gitignore");
+        fs::write(workspace.path().join("ignored.md"), "").expect("ignored file");
+        fs::create_dir(workspace.path().join(".git")).expect("git dir");
+        fs::write(workspace.path().join(".git/config"), "").expect("git config");
+
+        let (_, _, slash_candidates) = completion_candidates(
+            "/open_file READ",
+            "/open_file READ".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("slash completion");
+        assert_eq!(
+            slash_candidates,
+            vec!["README.md".to_string(), "doc/README.md".to_string()]
+        );
+
+        let (start, _, natural_candidates) =
+            completion_candidates("Open READ", "Open READ".len(), workspace.path(), &[])
+                .expect("natural completion");
+        assert_eq!(start, "Open ".len());
+        assert_eq!(
+            natural_candidates,
+            vec!["README.md".to_string(), "doc/README.md".to_string()]
+        );
+
+        let (_, _, ignored_candidates) =
+            completion_candidates("Open ign", "Open ign".len(), workspace.path(), &[])
+                .expect("ignored completion");
+        assert!(ignored_candidates.is_empty());
+
+        let (_, _, git_candidates) =
+            completion_candidates("Open con", "Open con".len(), workspace.path(), &[])
+                .expect("git completion");
+        assert!(git_candidates.is_empty());
+    }
+
+    #[test]
+    fn splits_editor_command_and_flags() {
+        assert_eq!(
+            shell_words("code --wait").expect("editor command"),
+            vec!["code".to_string(), "--wait".to_string()]
+        );
+        assert_eq!(
+            shell_words("\"/tmp/my editor\" --flag").expect("quoted editor command"),
+            vec!["/tmp/my editor".to_string(), "--flag".to_string()]
+        );
     }
 }

@@ -119,8 +119,11 @@ pub fn help_text() -> &'static str {
 /tools          List local tools exposed to the model
 /model          Show the active model and configured profiles
 /model <name>   Switch to a configured model profile
+/open_file <path> Open a workspace file in $EDITOR
 /clear          Clear the current conversation, keeping the system prompt
 /quit           Exit the client
+ 
+Natural-language forms such as `open README.md`, `list models`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, and Tab completion."#
 }

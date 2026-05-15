@@ -353,7 +353,7 @@ fn render_file_slice(content: &str, start_line: Option<usize>, end_line: Option<
         .join("\n")
 }
 
-fn resolve_workspace_path(workspace: &Path, raw_path: &str) -> Result<PathBuf> {
+pub fn resolve_workspace_path(workspace: &Path, raw_path: &str) -> Result<PathBuf> {
     let candidate = if Path::new(raw_path).is_absolute() {
         PathBuf::from(raw_path)
     } else {

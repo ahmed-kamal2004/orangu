@@ -54,6 +54,20 @@ Use:
 - `/disconnect` disconnects from the current server target
 - `/reload` restores the startup model and configured server target and clears the current conversation
 
+## Local editor command
+
+Use `/open_file <path>` to launch a workspace file in the editor configured by `$EDITOR`.
+
+## Natural-language command aliases
+
+Local commands can also be entered in plain language. Examples:
+
+- `open README.md`
+- `list models`
+- `show tools`
+- `show help`
+- `switch model to <name>`
+
 ## Comments and ignored input
 
 - If the first non-whitespace character is `#`, the line is treated as a local comment, shown in the transcript, and not sent to the LLM
@@ -73,5 +87,7 @@ The prompt supports standard shell-style editing:
 - `Left`
 - `Right`
 - `Tab` completion for slash commands and `/model`
+- File completion across the project for paths, including `/open_file <path>` and `open <path>`
+- File completion skips `.git` content and paths ignored by the workspace `.gitignore`
 
 Press `Ctrl+C` once to arm quit mode. Press it again within 2 seconds to exit.

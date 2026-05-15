@@ -42,11 +42,20 @@ orangu --config ./orangu.conf
 - `/tools`
 - `/model`
 - `/reload`
+- `/open_file README.md`
 
 Then try a natural-language request such as:
 
 ```text
 Show me the files in the current workspace
+```
+
+Built-in commands also accept natural-language forms, for example:
+
+```text
+open README.md
+list models
+show help
 ```
 
 Lines whose first non-whitespace character is `#` stay local and are not sent to the model. Lines whose first non-whitespace character is `\` are ignored.
