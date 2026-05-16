@@ -44,6 +44,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
+    - name: Install system build dependencies
+      shell: /bin/bash --noprofile --norc -eo pipefail {0}
+      run: |
+        if command -v dnf >/dev/null 2>&1; then
+          dnf install -y gcc gcc-c++ glibc-devel make
+        elif command -v microdnf >/dev/null 2>&1; then
+          microdnf install -y gcc gcc-c++ glibc-devel make
+        else
+          printf '%s\n' "No supported package manager found in container" >&2
+          exit 1
+        fi
     - name: Install stable toolchain
       uses: actions-rs/toolchain@v1
       with:
