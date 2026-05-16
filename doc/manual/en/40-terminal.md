@@ -21,6 +21,7 @@ The prompt area stays at the bottom of the terminal window.
 - Long input wraps upward
 - The model name is right-aligned below the prompt frame
 - Submitted input moves directly into the output area
+- The banner and prompt stay fixed while the output window scrolls independently
 
 ## Waiting state
 
@@ -89,5 +90,9 @@ The prompt supports standard shell-style editing:
 - `Tab` completion for slash commands and `/model`
 - File completion across the project for paths, including `/open_file <path>` and `open <path>`
 - File completion skips `.git` content and paths ignored by the workspace `.gitignore`
+- `Shift+PageUp` scrolls backward through the output window
+- `Shift+PageDown` scrolls forward through the output window
+- The output scrollback buffer keeps the most recent 10,000 lines
+- Scrolling is limited to the output window; it does not replace the header or prompt area
 
 Press `Ctrl+C` once to arm quit mode. Press it again within 2 seconds to exit.

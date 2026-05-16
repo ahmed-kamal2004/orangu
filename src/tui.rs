@@ -123,6 +123,7 @@ pub fn help_text() -> &'static str {
 /tools          List local tools exposed to the model
 /model          Show the active model and configured profiles
 /model <name>   Switch to a configured model profile
+/diff           Show a color unified diff against the current branch
 /open_file <path> Open a workspace file in $EDITOR
 /clear          Clear the current conversation, keeping the system prompt
 /quit           Exit the client
@@ -140,6 +141,7 @@ pub fn render_screen(
     prompt_branch: Option<&str>,
     status: HeaderStatus,
     transcript: &[String],
+    scroll_offset: usize,
     pending_line: Option<&str>,
     input: &str,
     cursor: usize,
@@ -151,20 +153,17 @@ pub fn render_screen(
     let input_lines = wrapped_input_lines(input, width, &prompt_prefix);
     let prompt_frame_height = input_lines.len() + 3;
     let height = terminal_height().max(header_line_count + prompt_frame_height + 1);
-    let output_start_row = header_line_count + 2;
-    let available_output_rows = height
-        .saturating_sub(prompt_frame_height)
-        .saturating_sub(output_start_row)
-        .saturating_add(1);
+    let available_output_rows =
+        available_output_rows(header_line_count, prompt_frame_height, height);
     let mut output_lines = transcript.to_vec();
     if let Some(pending_line) = pending_line {
         output_lines.push(pending_line.to_string());
     }
-    let visible_lines = if output_lines.len() > available_output_rows {
-        &output_lines[output_lines.len() - available_output_rows..]
-    } else {
-        &output_lines
-    };
+    let max_scroll_offset = output_lines.len().saturating_sub(available_output_rows);
+    let scroll_offset = scroll_offset.min(max_scroll_offset);
+    let visible_end = output_lines.len().saturating_sub(scroll_offset);
+    let visible_start = visible_end.saturating_sub(available_output_rows);
+    let visible_lines = &output_lines[visible_start..visible_end];
 
     let mut screen = String::new();
     screen.push_str(&header);
@@ -183,6 +182,26 @@ pub fn render_screen(
         height,
     ));
     screen
+}
+
+pub fn output_view_rows(
+    version: &str,
+    current_model: &str,
+    endpoint: &str,
+    workspace: &std::path::Path,
+    prompt_branch: Option<&str>,
+    status: HeaderStatus,
+    input: &str,
+) -> usize {
+    let header = render_header(version, current_model, endpoint, workspace, status);
+    let header_line_count = header.lines().count();
+    let width = terminal_width().max(1);
+    let prompt_prefix = prompt_prefix(prompt_branch);
+    let input_lines = wrapped_input_lines(input, width, &prompt_prefix);
+    let prompt_frame_height = input_lines.len() + 3;
+    let height = terminal_height().max(header_line_count + prompt_frame_height + 1);
+
+    available_output_rows(header_line_count, prompt_frame_height, height)
 }
 
 pub fn render_thinking_frame(frame: usize, elapsed: Duration) -> String {
@@ -216,6 +235,18 @@ fn format_elapsed_timer(elapsed: Duration) -> String {
     } else {
         format!("({seconds}s)")
     }
+}
+
+fn available_output_rows(
+    header_line_count: usize,
+    prompt_frame_height: usize,
+    height: usize,
+) -> usize {
+    let output_start_row = header_line_count + 2;
+    height
+        .saturating_sub(prompt_frame_height)
+        .saturating_sub(output_start_row)
+        .saturating_add(1)
 }
 
 fn indicator(ok: bool) -> String {
@@ -448,7 +479,8 @@ impl Completer for OranguHelper {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANSI_RESET, THINKING_TEXT, prompt_prefix, render_thinking_frame, wrapped_input_lines,
+        ANSI_RESET, THINKING_TEXT, available_output_rows, prompt_prefix, render_thinking_frame,
+        wrapped_input_lines,
     };
     use std::time::Duration;
 
@@ -481,5 +513,10 @@ mod tests {
             wrapped_input_lines("abc", 8, "main> "),
             vec!["ab".to_string(), "c".to_string()]
         );
+    }
+
+    #[test]
+    fn available_output_rows_matches_current_layout_math() {
+        assert_eq!(available_output_rows(8, 4, 24), 11);
     }
 }

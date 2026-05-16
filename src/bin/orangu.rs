@@ -16,8 +16,12 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use orangu::{
@@ -25,7 +29,7 @@ use orangu::{
     llm::normalized_openai_endpoint,
     session::ChatSession,
     tools::{ToolExecutor, resolve_workspace_path},
-    tui::{HeaderStatus, help_text, render_screen, render_thinking_frame},
+    tui::{HeaderStatus, help_text, output_view_rows, render_screen, render_thinking_frame},
 };
 use serde::Deserialize;
 use std::{
@@ -44,6 +48,7 @@ const TERMINAL_TITLE: &str = "orangu";
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const CTRL_C_EXIT_MESSAGE: &str = "Press Ctrl+c again to quit";
 const THINKING_FRAME_INTERVAL: Duration = Duration::from_millis(120);
+const TRANSCRIPT_MAX_LINES: usize = 10_000;
 const HISTORY_DIRECTORY: &str = ".orangu";
 const HISTORY_FILE: &str = "orangu.history";
 const COMMANDS: &[&str] = &[
@@ -54,6 +59,7 @@ const COMMANDS: &[&str] = &[
     "/list-models",
     "/tools",
     "/model",
+    "/diff",
     "/open_file",
     "/clear",
     "/quit",
@@ -109,9 +115,9 @@ async fn run() -> Result<()> {
             .ok_or_else(|| anyhow!("missing configured profile {}", active_model))?,
     ));
     let mut current_endpoint = Some(startup_endpoint.clone());
-    let _raw_mode_guard = RawModeGuard::new()?;
+    let _terminal_ui_guard = TerminalUiGuard::new()?;
 
-    let mut transcript = Vec::new();
+    let mut output_state = OutputState::default();
     let mut interrupt_state = InterruptState::default();
     let mut input_state = InputState::default();
     let history_path = history_file_path()?;
@@ -140,7 +146,8 @@ async fn run() -> Result<()> {
             tools.workspace(),
             prompt_branch.as_deref(),
             header_status,
-            &transcript,
+            output_state.lines(),
+            output_state.scroll_offset(),
             None,
             input_state.as_str(),
             input_state.cursor(),
@@ -153,7 +160,7 @@ async fn run() -> Result<()> {
             &workspace,
             &model_names,
             &mut interrupt_state,
-            &mut transcript,
+            &mut output_state,
             &active_model,
             current_endpoint.as_deref().unwrap_or("(disconnected)"),
             prompt_branch.as_deref(),
@@ -177,14 +184,16 @@ async fn run() -> Result<()> {
 
         history.push(trimmed.to_string());
         append_history_entry(&history_path, trimmed)?;
-        push_transcript(&mut transcript, &format!("> {trimmed}"));
+        output_state.push_text(&format!("> {trimmed}"));
+        output_state.reset_scroll();
         print_screen(
             &active_model,
             current_endpoint.as_deref().unwrap_or("(disconnected)"),
             tools.workspace(),
             prompt_branch.as_deref(),
             header_status,
-            &transcript,
+            output_state.lines(),
+            output_state.scroll_offset(),
             None,
             input_state.as_str(),
             input_state.cursor(),
@@ -211,11 +220,12 @@ async fn run() -> Result<()> {
                 break;
             }
             CommandOutcome::Cleared => {
-                transcript.clear();
+                output_state.clear();
                 continue;
             }
             CommandOutcome::Output(output) => {
-                push_transcript(&mut transcript, &output);
+                output_state.push_text(&output);
+                output_state.reset_scroll();
                 continue;
             }
             CommandOutcome::Unhandled => {}
@@ -226,7 +236,8 @@ async fn run() -> Result<()> {
             .get(&active_model)
             .ok_or_else(|| anyhow!("unknown model profile '{active_model}'"))?;
         let Some(endpoint) = current_endpoint.as_deref() else {
-            push_transcript(&mut transcript, "Error: Not connected to an LLM server");
+            output_state.push_text("Error: Not connected to an LLM server");
+            output_state.reset_scroll();
             continue;
         };
         let mut prompt_profile = profile.clone();
@@ -241,16 +252,64 @@ async fn run() -> Result<()> {
             tools.workspace(),
             prompt_branch.as_deref(),
             header_status,
-            &transcript,
+            output_state.lines(),
         )
         .await
         {
-            Ok(answer) => push_transcript(&mut transcript, &answer),
-            Err(err) => push_transcript(&mut transcript, &format!("Error: {err:#}")),
+            Ok(answer) => output_state.push_text(&answer),
+            Err(err) => output_state.push_text(&format!("Error: {err:#}")),
         }
+        output_state.reset_scroll();
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct OutputState {
+    transcript: Vec<String>,
+    scroll_offset: usize,
+}
+
+impl OutputState {
+    fn lines(&self) -> &[String] {
+        &self.transcript
+    }
+
+    fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    fn clear(&mut self) {
+        self.transcript.clear();
+        self.scroll_offset = 0;
+    }
+
+    fn push_text(&mut self, text: &str) {
+        let added_lines = text.lines().count();
+        self.transcript.extend(text.lines().map(ToOwned::to_owned));
+        if self.scroll_offset > 0 {
+            self.scroll_offset = self.scroll_offset.saturating_add(added_lines);
+        }
+
+        let excess = self.transcript.len().saturating_sub(TRANSCRIPT_MAX_LINES);
+        if excess > 0 {
+            self.transcript.drain(0..excess);
+            self.scroll_offset = self.scroll_offset.saturating_sub(excess);
+        }
+    }
+
+    fn reset_scroll(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    fn page_up(&mut self, rows: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(rows.max(1));
+    }
+
+    fn page_down(&mut self, rows: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(rows.max(1));
+    }
 }
 
 enum InterruptAction {
@@ -303,17 +362,27 @@ fn set_terminal_title(title: Option<&str>) {
     }
 }
 
-struct RawModeGuard;
+struct TerminalUiGuard;
 
-impl RawModeGuard {
+impl TerminalUiGuard {
     fn new() -> Result<Self> {
         enable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
         Ok(Self)
     }
 }
 
-impl Drop for RawModeGuard {
+impl Drop for TerminalUiGuard {
     fn drop(&mut self) {
+        let _ = execute!(
+            std::io::stdout(),
+            PopKeyboardEnhancementFlags,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -485,7 +554,7 @@ fn read_input(
     workspace: &std::path::Path,
     model_names: &[String],
     interrupt_state: &mut InterruptState,
-    transcript: &mut Vec<String>,
+    output_state: &mut OutputState,
     current_model: &str,
     endpoint: &str,
     prompt_branch: Option<&str>,
@@ -509,7 +578,8 @@ fn read_input(
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                         match interrupt_state.handle_interrupt(Instant::now()) {
                             InterruptAction::Continue => {
-                                push_transcript(transcript, CTRL_C_EXIT_MESSAGE);
+                                output_state.push_text(CTRL_C_EXIT_MESSAGE);
+                                output_state.reset_scroll();
                                 input_state.clear();
                                 return Ok(InputResult::Submitted(String::new()));
                             }
@@ -587,6 +657,32 @@ fn read_input(
                         apply_completion(input_state, workspace, model_names);
                         redraw = true;
                     }
+                    (KeyCode::PageUp, modifiers) if modifiers.contains(KeyModifiers::SHIFT) => {
+                        interrupt_state.reset();
+                        output_state.page_up(output_view_rows(
+                            VERSION,
+                            current_model,
+                            endpoint,
+                            workspace,
+                            prompt_branch,
+                            header_status,
+                            input_state.as_str(),
+                        ));
+                        redraw = true;
+                    }
+                    (KeyCode::PageDown, modifiers) if modifiers.contains(KeyModifiers::SHIFT) => {
+                        interrupt_state.reset();
+                        output_state.page_down(output_view_rows(
+                            VERSION,
+                            current_model,
+                            endpoint,
+                            workspace,
+                            prompt_branch,
+                            header_status,
+                            input_state.as_str(),
+                        ));
+                        redraw = true;
+                    }
                     (KeyCode::Char(ch), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                         interrupt_state.reset();
                         input_state.insert_char(ch);
@@ -605,7 +701,8 @@ fn read_input(
                 workspace,
                 prompt_branch,
                 header_status,
-                transcript,
+                output_state.lines(),
+                output_state.scroll_offset(),
                 None,
                 input_state.as_str(),
                 input_state.cursor(),
@@ -927,6 +1024,7 @@ enum LocalCommand<'a> {
     Tools,
     ModelInfo,
     SetModel(&'a str),
+    Diff,
     OpenFile(&'a str),
     Clear,
     Quit,
@@ -1002,6 +1100,7 @@ fn handle_command(
                 "Switched to model profile '{name}'"
             )))
         }
+        LocalCommand::Diff => Ok(CommandOutcome::Output(git_workspace_diff(workspace)?)),
         LocalCommand::OpenFile(path) => {
             open_in_editor(workspace, path)?;
             Ok(CommandOutcome::Output(format!("Opened {}", path)))
@@ -1036,6 +1135,7 @@ fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/list-models" => Some(LocalCommand::ListModels),
         "/tools" => Some(LocalCommand::Tools),
         "/model" => Some(LocalCommand::ModelInfo),
+        "/diff" => Some(LocalCommand::Diff),
         "/clear" => Some(LocalCommand::Clear),
         "/quit" => Some(LocalCommand::Quit),
         _ => {
@@ -1101,6 +1201,9 @@ fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         ],
     ) {
         return Some(LocalCommand::ModelInfo);
+    }
+    if matches_ci(input, &["diff", "show diff", "git diff"]) {
+        return Some(LocalCommand::Diff);
     }
     for prefix in [
         "use model ",
@@ -1188,6 +1291,48 @@ fn open_in_editor(workspace: &Path, raw_path: &str) -> Result<()> {
     Ok(())
 }
 
+fn git_workspace_diff(workspace: &Path) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("diff is only available inside a Git repository"))?;
+    let workspace_pathspec = workspace
+        .strip_prefix(&repo_root)
+        .ok()
+        .filter(|path| !path.as_os_str().is_empty());
+
+    let mut command = std::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(&repo_root)
+        .arg("--no-pager")
+        .arg("diff")
+        .arg("--color=always")
+        .arg("--unified=3")
+        .arg("HEAD");
+    if let Some(pathspec) = workspace_pathspec {
+        command.arg("--").arg(pathspec);
+    }
+
+    let output = command.output().context("failed to run git diff")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git diff failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+    if diff.trim().is_empty() {
+        Ok("No changes against the current branch.".to_string())
+    } else {
+        Ok(diff)
+    }
+}
+
 fn shell_words(input: &str) -> Result<Vec<String>> {
     let mut words = Vec::new();
     let mut current = String::new();
@@ -1244,21 +1389,30 @@ fn workspace_branch_name(workspace: &Path) -> Option<String> {
     reference.strip_prefix("refs/heads/").map(ToOwned::to_owned)
 }
 
+fn discover_git_root(workspace: &Path) -> Option<PathBuf> {
+    discover_git_repository(workspace).map(|(root, _)| root)
+}
+
 fn discover_git_dir(workspace: &Path) -> Option<PathBuf> {
+    discover_git_repository(workspace).map(|(_, git_dir)| git_dir)
+}
+
+fn discover_git_repository(workspace: &Path) -> Option<(PathBuf, PathBuf)> {
     for ancestor in workspace.ancestors() {
         let git_entry = ancestor.join(".git");
         if git_entry.is_dir() {
-            return Some(git_entry);
+            return Some((ancestor.to_path_buf(), git_entry));
         }
         if git_entry.is_file() {
             let gitdir = fs::read_to_string(&git_entry).ok()?;
             let relative = gitdir.trim().strip_prefix("gitdir: ")?.trim();
             let path = Path::new(relative);
-            return Some(if path.is_absolute() {
+            let git_dir = if path.is_absolute() {
                 path.to_path_buf()
             } else {
                 ancestor.join(path)
-            });
+            };
+            return Some((ancestor.to_path_buf(), git_dir));
         }
     }
     None
@@ -1285,6 +1439,7 @@ fn print_screen(
     prompt_branch: Option<&str>,
     header_status: HeaderStatus,
     transcript: &[String],
+    scroll_offset: usize,
     pending_line: Option<&str>,
     input: &str,
     cursor: usize,
@@ -1300,6 +1455,7 @@ fn print_screen(
             prompt_branch,
             header_status,
             transcript,
+            scroll_offset,
             pending_line,
             input,
             cursor
@@ -1332,6 +1488,7 @@ async fn wait_for_response(
         prompt_branch,
         header_status,
         transcript,
+        0,
         Some(initial_frame.as_str()),
         "",
         0,
@@ -1352,6 +1509,7 @@ async fn wait_for_response(
                     prompt_branch,
                     header_status,
                     transcript,
+                    0,
                     Some(pending_line.as_str()),
                     "",
                     0,
@@ -1479,10 +1637,6 @@ fn append_history_entry(path: &Path, entry: &str) -> Result<()> {
         .with_context(|| format!("failed to write history file {}", path.display()))
 }
 
-fn push_transcript(transcript: &mut Vec<String>, text: &str) {
-    transcript.extend(text.lines().map(ToOwned::to_owned));
-}
-
 fn format_models(llms: &HashMap<String, LlmConfiguration>) -> String {
     let mut names = sorted_model_names(llms);
     let mut lines = Vec::with_capacity(names.len());
@@ -1506,9 +1660,9 @@ fn format_tools(tools: &ToolExecutor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandOutcome, LocalCommand, completion_candidates, discover_git_dir, handle_command,
-        parse_local_command, resolve_workspace_root, shell_words, system_prompt,
-        workspace_branch_name,
+        CommandOutcome, LocalCommand, OutputState, completion_candidates, discover_git_dir,
+        discover_git_root, git_workspace_diff, handle_command, parse_local_command,
+        resolve_workspace_root, shell_words, system_prompt, workspace_branch_name,
     };
     use orangu::{config::LlmConfiguration, session::ChatSession, tools::ToolExecutor};
     use std::collections::HashMap;
@@ -1534,6 +1688,24 @@ mod tests {
     }
 
     #[test]
+    fn output_state_keeps_last_ten_thousand_lines() {
+        let mut output_state = OutputState::default();
+        for index in 0..10_005 {
+            output_state.push_text(&format!("line {index}"));
+        }
+
+        assert_eq!(output_state.lines().len(), 10_000);
+        assert_eq!(
+            output_state.lines().first().map(String::as_str),
+            Some("line 5")
+        );
+        assert_eq!(
+            output_state.lines().last().map(String::as_str),
+            Some("line 10004")
+        );
+    }
+
+    #[test]
     fn parses_open_file_commands() {
         match parse_local_command("/open_file README.md") {
             Some(LocalCommand::OpenFile(path)) => assert_eq!(path, "README.md"),
@@ -1554,6 +1726,10 @@ mod tests {
         assert!(matches!(
             parse_local_command("show commands"),
             Some(LocalCommand::Help)
+        ));
+        assert!(matches!(
+            parse_local_command("diff"),
+            Some(LocalCommand::Diff)
         ));
         assert!(matches!(
             parse_local_command("list models"),
@@ -1608,9 +1784,57 @@ mod tests {
             Some("main")
         );
         assert_eq!(
+            discover_git_root(workspace.path()).as_deref(),
+            Some(workspace.path())
+        );
+        assert_eq!(
             discover_git_dir(workspace.path()).as_deref(),
             Some(workspace.path().join(".git").as_path())
         );
+    }
+
+    #[test]
+    fn git_workspace_diff_is_colorized_and_unified() {
+        let workspace = tempdir().expect("workspace");
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Orangu Tests"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git config name");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@example.com"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git config email");
+        fs::write(workspace.path().join("README.md"), "one\ntwo\nthree\n").expect("write file");
+        std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git commit");
+
+        fs::write(
+            workspace.path().join("README.md"),
+            "one\nchanged\nthree\nfour\n",
+        )
+        .expect("update file");
+
+        let diff = git_workspace_diff(workspace.path()).expect("git diff");
+        assert!(diff.contains("\u{1b}["));
+        assert!(diff.contains("@@"));
+        assert!(diff.contains("diff --git"));
+        assert!(diff.contains("changed"));
+        assert!(diff.contains("four"));
     }
 
     #[test]
