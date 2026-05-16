@@ -2036,11 +2036,11 @@ fn format_tools(tools: &ToolExecutor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandContext, CommandOutcome, CommandState, EscapeCancelState, LocalCommand,
-        OutputState, completion_candidates, discover_git_dir, discover_git_root,
-        final_pending_line, git_workspace_diff, handle_command, is_wait_cancel_escape,
-        parse_local_command, prompt_progress_tokens_per_second, render_left_status,
-        resolve_workspace_root, shell_words, system_prompt, workspace_branch_name,
+        CommandContext, CommandOutcome, CommandState, EscapeCancelState, LocalCommand, OutputState,
+        completion_candidates, discover_git_dir, discover_git_root, final_pending_line,
+        git_workspace_diff, handle_command, is_wait_cancel_escape, parse_local_command,
+        prompt_progress_tokens_per_second, render_left_status, resolve_workspace_root, shell_words,
+        system_prompt, workspace_branch_name,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use orangu::{

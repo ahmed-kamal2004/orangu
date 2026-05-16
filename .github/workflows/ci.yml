@@ -95,8 +95,8 @@ jobs:
         toolchain: stable
         override: true
     - name: Run test cases
+      shell: /bin/bash --noprofile --norc -eo pipefail {0}
       run: |
-        set -o pipefail
         mkdir -p /tmp/orangu-test/log
         cargo test --all-targets --all-features -- --nocapture 2>&1 | tee /tmp/orangu-test/log/test.log
         status=${PIPESTATUS[0]}
