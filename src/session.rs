@@ -45,6 +45,14 @@ impl ChatSession {
         self.messages.push(ChatMessage::system(system_prompt));
     }
 
+    pub fn checkpoint(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn rollback(&mut self, checkpoint: usize) {
+        self.messages.truncate(checkpoint);
+    }
+
     pub async fn prompt<F, G>(
         &mut self,
         user_input: &str,
@@ -59,7 +67,7 @@ impl ChatSession {
     {
         let client = OpenAiClient::from_profile(profile)?;
         let tool_definitions = tools.definitions();
-        let checkpoint = self.messages.len();
+        let checkpoint = self.checkpoint();
         self.messages.push(ChatMessage::user(user_input));
 
         for _ in 0..profile.max_tool_rounds {
@@ -99,13 +107,13 @@ impl ChatSession {
                     }
                 },
                 Err(err) => {
-                    self.messages.truncate(checkpoint);
+                    self.rollback(checkpoint);
                     return Err(err);
                 }
             }
         }
 
-        self.messages.truncate(checkpoint);
+        self.rollback(checkpoint);
         Err(anyhow!(
             "model exceeded the configured max_tool_rounds ({})",
             profile.max_tool_rounds

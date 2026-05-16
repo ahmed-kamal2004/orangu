@@ -37,6 +37,8 @@ You can keep typing and submitting commands while a response is pending. Submitt
 
 When a profile uses `provider = llama.cpp`, the left side of the footer uses llama.cpp's native stream metrics: prompt-processing throughput before the first token, then generation throughput while tokens are streaming.
 
+Press `Esc` twice within 2 seconds during the waiting state to cancel the active request without exiting the client. Queued commands are preserved.
+
 ## History and navigation
 
 Command history is stored in:

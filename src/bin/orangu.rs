@@ -49,6 +49,7 @@ const CLEAR_TERMINAL_SEQUENCE: &str = "\x1b[2J\x1b[H";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const TERMINAL_TITLE: &str = "orangu";
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+const ESC_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
 const CTRL_C_EXIT_MESSAGE: &str = "Press Ctrl+c again to quit";
 const THINKING_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const WAIT_LOOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -276,6 +277,7 @@ async fn run() -> Result<()> {
         .await
         {
             Ok(WaitResult::Response(answer)) => output_state.push_text(&answer),
+            Ok(WaitResult::Cancelled) => output_state.push_text("Request cancelled."),
             Ok(WaitResult::Quit) => {
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
@@ -574,6 +576,7 @@ enum InputResult {
 
 enum WaitResult {
     Response(String),
+    Cancelled,
     Quit,
 }
 
@@ -586,6 +589,29 @@ struct InputEventResult {
 struct StreamRenderState {
     output: String,
     metrics: StreamMetrics,
+}
+
+#[derive(Debug, Default)]
+struct EscapeCancelState {
+    last_escape: Option<Instant>,
+}
+
+impl EscapeCancelState {
+    fn reset(&mut self) {
+        self.last_escape = None;
+    }
+
+    fn handle_escape(&mut self, now: Instant) -> bool {
+        if let Some(last_escape) = self.last_escape
+            && now.duration_since(last_escape) <= ESC_CANCEL_TIMEOUT
+        {
+            self.last_escape = None;
+            return true;
+        }
+
+        self.last_escape = Some(now);
+        false
+    }
 }
 
 fn read_input(
@@ -1631,6 +1657,7 @@ async fn wait_for_response(
     let thinking_started = Instant::now();
     let mut last_rendered_output = String::new();
     let mut last_rendered_metrics = StreamMetrics::default();
+    let mut escape_cancel_state = EscapeCancelState::default();
     let initial_frame = render_thinking_frame(thinking_frame, thinking_started.elapsed());
 
     print_screen(
@@ -1691,8 +1718,17 @@ async fn wait_for_response(
                 redraw |= current_stream_metrics != last_rendered_metrics;
 
                 while event::poll(Duration::ZERO)? {
+                    let event = event::read()?;
+                    if is_wait_cancel_escape(&event) {
+                        if escape_cancel_state.handle_escape(Instant::now()) {
+                            drop(prompt_future);
+                            return Ok(WaitResult::Cancelled);
+                        }
+                        continue;
+                    }
+                    escape_cancel_state.reset();
                     let result = handle_input_event(
-                        event::read()?,
+                        event,
                         input_state,
                         history,
                         workspace,
@@ -1801,6 +1837,17 @@ fn prompt_progress_tokens_per_second(progress: &StreamPromptProgress) -> Option<
     let processed = progress.processed.saturating_sub(progress.cache) as f64;
     let elapsed_secs = progress.time_ms as f64 / 1000.0;
     (processed > 0.0 && elapsed_secs > 0.0).then_some(processed / elapsed_secs)
+}
+
+fn is_wait_cancel_escape(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            kind: KeyEventKind::Press,
+            ..
+        })
+    )
 }
 
 fn final_pending_line(streamed_output: &str, response: &str) -> Option<String> {
@@ -1953,11 +2000,13 @@ fn format_tools(tools: &ToolExecutor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CommandOutcome, LocalCommand, OutputState, completion_candidates, discover_git_dir,
-        discover_git_root, final_pending_line, git_workspace_diff, handle_command,
-        parse_local_command, prompt_progress_tokens_per_second, render_left_status,
-        resolve_workspace_root, shell_words, system_prompt, workspace_branch_name,
+        CommandOutcome, EscapeCancelState, LocalCommand, OutputState, completion_candidates,
+        discover_git_dir, discover_git_root, final_pending_line, git_workspace_diff,
+        handle_command, is_wait_cancel_escape, parse_local_command,
+        prompt_progress_tokens_per_second, render_left_status, resolve_workspace_root, shell_words,
+        system_prompt, workspace_branch_name,
     };
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use orangu::{
         config::LlmConfiguration,
         llm::{StreamMetrics, StreamPromptProgress},
@@ -1965,7 +2014,11 @@ mod tests {
         tools::ToolExecutor,
     };
     use std::collections::HashMap;
-    use std::{fs, path::PathBuf, time::Duration};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -2255,6 +2308,33 @@ mod tests {
             Some("final reply")
         );
         assert_eq!(final_pending_line("", ""), None);
+    }
+
+    #[test]
+    fn escape_cancel_requires_two_presses_within_timeout() {
+        let mut cancel_state = EscapeCancelState::default();
+        let start = Instant::now();
+
+        assert!(!cancel_state.handle_escape(start));
+        assert!(cancel_state.handle_escape(start + Duration::from_millis(500)));
+
+        assert!(!cancel_state.handle_escape(start + Duration::from_secs(5)));
+        assert!(!cancel_state.handle_escape(start + Duration::from_secs(8)));
+    }
+
+    #[test]
+    fn wait_cancel_escape_only_matches_escape_press() {
+        assert!(is_wait_cancel_escape(&Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        ))));
+        assert!(!is_wait_cancel_escape(&Event::Key(
+            KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Repeat)
+        )));
+        assert!(!is_wait_cancel_escape(&Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE
+        ))));
     }
 
     #[test]
