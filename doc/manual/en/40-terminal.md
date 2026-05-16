@@ -35,6 +35,8 @@ placeholder in the position where the reply will appear.
 
 You can keep typing and submitting commands while a response is pending. Submitted commands are queued and executed in order after the active response finishes.
 
+When a profile uses `provider = llama.cpp`, the left side of the footer uses llama.cpp's native stream metrics: prompt-processing throughput before the first token, then generation throughput while tokens are streaming.
+
 ## History and navigation
 
 Command history is stored in:
@@ -97,5 +99,6 @@ The prompt supports standard shell-style editing:
 - The output scrollback buffer keeps the most recent 10,000 lines
 - Scrolling is limited to the output window; it does not replace the header or prompt area
 - The footer centers `Pending: X` to show how many queued commands are waiting
+- The footer can show live throughput on the left while a response is in progress
 
 Press `Ctrl+C` once to arm quit mode. Press it again within 2 seconds to exit.

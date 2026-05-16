@@ -21,6 +21,41 @@ use std::collections::HashMap;
 
 pub use openai::{OpenAiClient, normalized_openai_endpoint};
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StreamMetrics {
+    pub prompt_progress: Option<StreamPromptProgress>,
+    pub prompt_per_second: Option<f64>,
+    pub predicted_per_second: Option<f64>,
+}
+
+impl StreamMetrics {
+    pub fn is_empty(&self) -> bool {
+        self.prompt_progress.is_none()
+            && self.prompt_per_second.is_none()
+            && self.predicted_per_second.is_none()
+    }
+
+    pub fn merge(&mut self, update: Self) {
+        if let Some(progress) = update.prompt_progress {
+            self.prompt_progress = Some(progress);
+        }
+        if let Some(prompt_per_second) = update.prompt_per_second {
+            self.prompt_per_second = Some(prompt_per_second);
+        }
+        if let Some(predicted_per_second) = update.predicted_per_second {
+            self.predicted_per_second = Some(predicted_per_second);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StreamPromptProgress {
+    pub total: i32,
+    pub cache: i32,
+    pub processed: i32,
+    pub time_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,

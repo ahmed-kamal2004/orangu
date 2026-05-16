@@ -15,7 +15,7 @@
 
 use crate::{
     config::LlmConfiguration,
-    llm::{ChatMessage, LlmResponse, OpenAiClient},
+    llm::{ChatMessage, LlmResponse, OpenAiClient, StreamMetrics},
     tools::ToolExecutor,
 };
 use anyhow::{Result, anyhow};
@@ -45,19 +45,33 @@ impl ChatSession {
         self.messages.push(ChatMessage::system(system_prompt));
     }
 
-    pub async fn prompt(
+    pub async fn prompt<F, G>(
         &mut self,
         user_input: &str,
         profile: &LlmConfiguration,
         tools: &ToolExecutor,
-    ) -> Result<String> {
+        mut on_text_delta: F,
+        mut on_stream_metrics: G,
+    ) -> Result<String>
+    where
+        F: FnMut(&str),
+        G: FnMut(StreamMetrics),
+    {
         let client = OpenAiClient::from_profile(profile)?;
         let tool_definitions = tools.definitions();
         let checkpoint = self.messages.len();
         self.messages.push(ChatMessage::user(user_input));
 
         for _ in 0..profile.max_tool_rounds {
-            match client.chat(&self.messages, &tool_definitions).await {
+            match client
+                .chat(
+                    &self.messages,
+                    &tool_definitions,
+                    &mut on_text_delta,
+                    &mut on_stream_metrics,
+                )
+                .await
+            {
                 Ok(response) => match response {
                     LlmResponse::Text(text) => {
                         self.messages.push(ChatMessage::assistant(&text));

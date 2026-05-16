@@ -142,6 +142,7 @@ pub fn render_screen(
     status: HeaderStatus,
     transcript: &[String],
     scroll_offset: usize,
+    left_status: Option<&str>,
     pending_count: usize,
     pending_line: Option<&str>,
     input: &str,
@@ -158,7 +159,11 @@ pub fn render_screen(
         available_output_rows(header_line_count, prompt_frame_height, height);
     let mut output_lines = transcript.to_vec();
     if let Some(pending_line) = pending_line {
-        output_lines.push(pending_line.to_string());
+        if pending_line.is_empty() {
+            output_lines.push(String::new());
+        } else {
+            output_lines.extend(pending_line.lines().map(ToOwned::to_owned));
+        }
     }
     let max_scroll_offset = output_lines.len().saturating_sub(available_output_rows);
     let scroll_offset = scroll_offset.min(max_scroll_offset);
@@ -176,6 +181,7 @@ pub fn render_screen(
     screen.push_str(&render_prompt_frame(
         header_line_count,
         current_model,
+        left_status,
         pending_count,
         &prompt_prefix,
         input,
@@ -282,6 +288,7 @@ fn status_indicator_line(text: &str, ok: bool) -> HeaderLine {
 fn render_prompt_frame(
     header_height: usize,
     current_model: &str,
+    left_status: Option<&str>,
     pending_count: usize,
     prompt_prefix: &str,
     input: &str,
@@ -315,7 +322,7 @@ fn render_prompt_frame(
     let cursor_row = input_start_row + cursor_row_offset;
     let cursor_col = 1 + prompt_width + cursor_col_offset;
 
-    let status_line = render_status_line(width, current_model, pending_count);
+    let status_line = render_status_line(width, left_status, current_model, pending_count);
     frame.push_str(&format!(
         "\x1b[{bottom_row};1H{line}\x1b[{model_row};1H{status_line}\x1b[{cursor_row};{cursor_col}H"
     ));
@@ -366,8 +373,20 @@ fn prompt_prefix(branch_name: Option<&str>) -> String {
     }
 }
 
-fn render_status_line(width: usize, current_model: &str, pending_count: usize) -> String {
+fn render_status_line(
+    width: usize,
+    left_status: Option<&str>,
+    current_model: &str,
+    pending_count: usize,
+) -> String {
     let mut cells = vec![' '; width];
+    if let Some(left_status) = left_status.filter(|text| !text.is_empty()) {
+        for (index, ch) in left_status.chars().enumerate() {
+            if index < width {
+                cells[index] = ch;
+            }
+        }
+    }
     if pending_count > 0 {
         let pending = format!("Pending: {pending_count}");
         let pending_width = pending.chars().count();
@@ -542,7 +561,8 @@ mod tests {
 
     #[test]
     fn status_line_centers_pending_count() {
-        let line = render_status_line(30, "gpt-4.1", 3);
+        let line = render_status_line(30, Some("2.5t/s"), "gpt-4.1", 3);
+        assert!(line.starts_with("2.5t/s"));
         assert!(line.contains("Pending: 3"));
         assert!(line.ends_with("gpt-4.1"));
     }

@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use super::{ChatMessage, LlmResponse, ToolCall, ToolCallFunction, ToolDefinition};
+use super::{
+    ChatMessage, LlmResponse, StreamMetrics, StreamPromptProgress, ToolCall, ToolCallFunction,
+    ToolDefinition,
+};
 use crate::config::LlmConfiguration;
 use anyhow::{Result, anyhow};
 use reqwest::Client;
@@ -25,6 +28,7 @@ pub struct OpenAiClient {
     endpoint: String,
     model: String,
     api_key: Option<String>,
+    llama_cpp: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,37 +38,77 @@ struct OpenAiChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timings_per_token: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    return_progress: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiStreamResponse {
+    #[serde(default)]
+    choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    timings: Option<OpenAiTimings>,
+    #[serde(default)]
+    prompt_progress: Option<OpenAiPromptProgress>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChatResponse {
-    choices: Vec<OpenAiChoice>,
+struct OpenAiStreamChoice {
+    #[serde(default)]
+    delta: OpenAiDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiMessage {
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiDelta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Option<Vec<OpenAiToolCall>>,
+    tool_calls: Option<Vec<OpenAiToolCallDelta>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiToolCall {
+struct OpenAiToolCallDelta {
+    index: usize,
     #[serde(default)]
     id: Option<String>,
     #[serde(rename = "type", default)]
     tool_type: Option<String>,
-    function: OpenAiToolCallFunction,
+    #[serde(default)]
+    function: Option<OpenAiToolCallFunctionDelta>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiToolCallFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiToolCallFunction {
+struct OpenAiTimings {
+    #[serde(default)]
+    prompt_per_second: Option<f64>,
+    #[serde(default)]
+    predicted_per_second: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptProgress {
+    total: i32,
+    cache: i32,
+    processed: i32,
+    time_ms: i64,
+}
+
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    id: Option<String>,
+    tool_type: Option<String>,
     name: String,
     arguments: String,
 }
@@ -78,20 +122,29 @@ impl OpenAiClient {
             endpoint: normalize_openai_endpoint(&profile.endpoint),
             model: profile.model.clone(),
             api_key: profile.api_key.clone(),
+            llama_cpp: profile.provider.eq_ignore_ascii_case("llama.cpp"),
         })
     }
 
-    pub async fn chat(
+    pub async fn chat<F, G>(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> Result<LlmResponse> {
+        mut on_text_delta: F,
+        mut on_stream_metrics: G,
+    ) -> Result<LlmResponse>
+    where
+        F: FnMut(&str),
+        G: FnMut(StreamMetrics),
+    {
         let url = format!("{}/v1/chat/completions", self.endpoint);
         let request = OpenAiChatRequest {
             model: &self.model,
             messages,
-            stream: false,
+            stream: true,
             tools: if tools.is_empty() { None } else { Some(tools) },
+            timings_per_token: self.llama_cpp.then_some(true),
+            return_progress: self.llama_cpp.then_some(true),
         };
 
         let mut builder = self.http_client.post(&url).json(&request);
@@ -99,7 +152,7 @@ impl OpenAiClient {
             builder = builder.bearer_auth(api_key);
         }
 
-        let resp = builder.send().await.map_err(|e| {
+        let mut resp = builder.send().await.map_err(|e| {
             anyhow!(
                 "failed to send chat request to {} using model {}: {}",
                 self.endpoint,
@@ -118,36 +171,54 @@ impl OpenAiClient {
             ));
         }
 
-        let chat_resp: OpenAiChatResponse = resp.json().await?;
-        let message = chat_resp
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("server returned an empty choices list"))?
-            .message;
+        let mut pending_lines = Vec::new();
+        let mut line_buffer = String::new();
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
 
-        match message.tool_calls {
-            Some(calls) if !calls.is_empty() => {
-                let mapped_calls = calls
-                    .into_iter()
-                    .map(|tc| {
-                        let arguments = parse_tool_arguments(&tc.function.arguments)?;
-                        Ok(ToolCall {
-                            id: tc
-                                .id
-                                .unwrap_or_else(|| format!("call_{}", tc.function.name)),
-                            tool_type: tc.tool_type.unwrap_or_else(|| "function".to_string()),
-                            function: ToolCallFunction {
-                                name: tc.function.name,
-                                arguments,
-                            },
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(LlmResponse::ToolCalls(mapped_calls))
+        while let Some(chunk) = resp.chunk().await? {
+            line_buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(newline_index) = line_buffer.find('\n') {
+                let mut line = line_buffer.drain(..=newline_index).collect::<String>();
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+
+                if line.is_empty() {
+                    if process_stream_event(
+                        &pending_lines,
+                        &mut content,
+                        &mut tool_calls,
+                        &mut on_text_delta,
+                        &mut on_stream_metrics,
+                    )? {
+                        return finalize_stream_response(content, tool_calls);
+                    }
+                    pending_lines.clear();
+                    continue;
+                }
+
+                if let Some(payload) = line.strip_prefix("data:") {
+                    pending_lines.push(payload.trim_start().to_string());
+                }
             }
-            _ => Ok(LlmResponse::Text(message.content.unwrap_or_default())),
         }
+
+        if !pending_lines.is_empty() {
+            let _ = process_stream_event(
+                &pending_lines,
+                &mut content,
+                &mut tool_calls,
+                &mut on_text_delta,
+                &mut on_stream_metrics,
+            )?;
+        }
+
+        finalize_stream_response(content, tool_calls)
     }
 }
 
@@ -160,10 +231,230 @@ pub fn normalized_openai_endpoint(endpoint: &str) -> String {
     normalize_openai_endpoint(endpoint)
 }
 
+fn process_stream_event<F, G>(
+    pending_lines: &[String],
+    content: &mut String,
+    tool_calls: &mut Vec<PartialToolCall>,
+    on_text_delta: &mut F,
+    on_stream_metrics: &mut G,
+) -> Result<bool>
+where
+    F: FnMut(&str),
+    G: FnMut(StreamMetrics),
+{
+    if pending_lines.is_empty() {
+        return Ok(false);
+    }
+
+    let payload = pending_lines.join("\n");
+    if payload == "[DONE]" {
+        return Ok(true);
+    }
+
+    let response: OpenAiStreamResponse = serde_json::from_str(&payload)?;
+    let metrics = stream_metrics_from_response(&response);
+    if !metrics.is_empty() {
+        on_stream_metrics(metrics);
+    }
+    for choice in response.choices {
+        if let Some(text) = choice.delta.content {
+            content.push_str(&text);
+            on_text_delta(&text);
+        }
+        if let Some(deltas) = choice.delta.tool_calls {
+            apply_tool_call_deltas(tool_calls, deltas);
+        }
+        let _ = choice.finish_reason;
+    }
+
+    Ok(false)
+}
+
+fn stream_metrics_from_response(response: &OpenAiStreamResponse) -> StreamMetrics {
+    let mut metrics = StreamMetrics::default();
+    if let Some(timings) = &response.timings {
+        metrics.prompt_per_second = timings.prompt_per_second;
+        metrics.predicted_per_second = timings.predicted_per_second;
+    }
+    if let Some(progress) = &response.prompt_progress {
+        metrics.prompt_progress = Some(StreamPromptProgress {
+            total: progress.total,
+            cache: progress.cache,
+            processed: progress.processed,
+            time_ms: progress.time_ms,
+        });
+    }
+    metrics
+}
+
+fn apply_tool_call_deltas(tool_calls: &mut Vec<PartialToolCall>, deltas: Vec<OpenAiToolCallDelta>) {
+    for delta in deltas {
+        if tool_calls.len() <= delta.index {
+            tool_calls.resize_with(delta.index + 1, PartialToolCall::default);
+        }
+        let entry = &mut tool_calls[delta.index];
+        if let Some(id) = delta.id {
+            entry.id = Some(id);
+        }
+        if let Some(tool_type) = delta.tool_type {
+            entry.tool_type = Some(tool_type);
+        }
+        if let Some(function) = delta.function {
+            if let Some(name) = function.name {
+                entry.name.push_str(&name);
+            }
+            if let Some(arguments) = function.arguments {
+                entry.arguments.push_str(&arguments);
+            }
+        }
+    }
+}
+
+fn finalize_stream_response(
+    content: String,
+    tool_calls: Vec<PartialToolCall>,
+) -> Result<LlmResponse> {
+    if !tool_calls.is_empty() {
+        let mapped_calls = tool_calls
+            .into_iter()
+            .map(|tc| {
+                let arguments = parse_tool_arguments(&tc.arguments)?;
+                let name = tc.name;
+                Ok(ToolCall {
+                    id: tc.id.unwrap_or_else(|| format!("call_{name}")),
+                    tool_type: tc.tool_type.unwrap_or_else(|| "function".to_string()),
+                    function: ToolCallFunction { name, arguments },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(LlmResponse::ToolCalls(mapped_calls))
+    } else {
+        Ok(LlmResponse::Text(content))
+    }
+}
+
 fn parse_tool_arguments(arguments: &str) -> Result<HashMap<String, serde_json::Value>> {
     let trimmed = arguments.trim();
     if trimmed.is_empty() {
         return Ok(HashMap::new());
     }
     Ok(serde_json::from_str(trimmed)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_event_appends_text_deltas() {
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut rendered = String::new();
+        let mut metrics = Vec::new();
+
+        let done = process_stream_event(
+            &[r#"{"choices":[{"delta":{"content":"Hello"}}]}"#.to_string()],
+            &mut content,
+            &mut tool_calls,
+            &mut |text| rendered.push_str(text),
+            &mut |update| metrics.push(update),
+        )
+        .expect("stream event");
+
+        assert!(!done);
+        assert_eq!(content, "Hello");
+        assert_eq!(rendered, "Hello");
+        assert!(tool_calls.is_empty());
+        assert!(metrics.is_empty());
+    }
+
+    #[test]
+    fn stream_event_assembles_tool_call_deltas() {
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut metrics = Vec::new();
+
+        process_stream_event(
+            &[r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{"}}]}}]}"#.to_string()],
+            &mut content,
+            &mut tool_calls,
+            &mut |_| {},
+            &mut |update| metrics.push(update),
+        )
+        .expect("first tool delta");
+        process_stream_event(
+            &[r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"path\":\"README.md\"}"}}]}}]}"#.to_string()],
+            &mut content,
+            &mut tool_calls,
+            &mut |_| {},
+            &mut |update| metrics.push(update),
+        )
+        .expect("second tool delta");
+
+        let response = finalize_stream_response(content, tool_calls).expect("finalize");
+        match response {
+            LlmResponse::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, "read_file");
+                assert_eq!(
+                    calls[0].function.arguments.get("path"),
+                    Some(&serde_json::Value::String("README.md".to_string()))
+                );
+            }
+            _ => panic!("expected tool calls"),
+        }
+        assert!(metrics.is_empty());
+    }
+
+    #[test]
+    fn stream_event_extracts_llama_cpp_metrics() {
+        let mut content = String::new();
+        let mut tool_calls = Vec::new();
+        let mut metrics = Vec::new();
+
+        process_stream_event(
+            &[r#"{"choices":[{"delta":{"role":"assistant","content":null}}],"timings":{"prompt_per_second":32.3,"predicted_per_second":52.9},"prompt_progress":{"total":100,"cache":20,"processed":60,"time_ms":2000}}"#.to_string()],
+            &mut content,
+            &mut tool_calls,
+            &mut |_| {},
+            &mut |update| metrics.push(update),
+        )
+        .expect("metrics event");
+
+        assert_eq!(
+            metrics,
+            vec![StreamMetrics {
+                prompt_progress: Some(StreamPromptProgress {
+                    total: 100,
+                    cache: 20,
+                    processed: 60,
+                    time_ms: 2000,
+                }),
+                prompt_per_second: Some(32.3),
+                predicted_per_second: Some(52.9),
+            }]
+        );
+    }
+
+    #[test]
+    fn llama_cpp_requests_native_stream_metrics() {
+        let request = OpenAiChatRequest {
+            model: "model",
+            messages: &[],
+            stream: true,
+            tools: None,
+            timings_per_token: Some(true),
+            return_progress: Some(true),
+        };
+
+        let encoded = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(
+            encoded.get("timings_per_token"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            encoded.get("return_progress"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 }

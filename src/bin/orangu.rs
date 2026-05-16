@@ -26,7 +26,7 @@ use crossterm::{
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use orangu::{
     config::{LlmConfiguration, default_client_config_path, load_client_configuration},
-    llm::normalized_openai_endpoint,
+    llm::{StreamMetrics, StreamPromptProgress, normalized_openai_endpoint},
     session::ChatSession,
     tools::{ToolExecutor, resolve_workspace_path},
     tui::{HeaderStatus, help_text, output_view_rows, render_screen, render_thinking_frame},
@@ -39,8 +39,10 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::ExitCode,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use tiktoken_rs::cl100k_base;
 use walkdir::WalkDir;
 
 const CLEAR_TERMINAL_SEQUENCE: &str = "\x1b[2J\x1b[H";
@@ -151,6 +153,7 @@ async fn run() -> Result<()> {
             header_status,
             output_state.lines(),
             output_state.scroll_offset(),
+            None,
             pending_commands.len(),
             None,
             input_state.as_str(),
@@ -205,6 +208,7 @@ async fn run() -> Result<()> {
             header_status,
             output_state.lines(),
             output_state.scroll_offset(),
+            None,
             pending_commands.len(),
             None,
             input_state.as_str(),
@@ -578,6 +582,12 @@ struct InputEventResult {
     outcome: Option<InputResult>,
 }
 
+#[derive(Clone, Default)]
+struct StreamRenderState {
+    output: String,
+    metrics: StreamMetrics,
+}
+
 fn read_input(
     input_state: &mut InputState,
     history: &[String],
@@ -619,6 +629,7 @@ fn read_input(
                 header_status,
                 output_state.lines(),
                 output_state.scroll_offset(),
+                None,
                 pending_count,
                 None,
                 input_state.as_str(),
@@ -1551,6 +1562,7 @@ fn print_screen(
     header_status: HeaderStatus,
     transcript: &[String],
     scroll_offset: usize,
+    left_status: Option<&str>,
     pending_count: usize,
     pending_line: Option<&str>,
     input: &str,
@@ -1568,6 +1580,7 @@ fn print_screen(
             header_status,
             transcript,
             scroll_offset,
+            left_status,
             pending_count,
             pending_line,
             input,
@@ -1594,10 +1607,30 @@ async fn wait_for_response(
     input_state: &mut InputState,
     pending_commands: &mut VecDeque<String>,
 ) -> Result<WaitResult> {
-    let mut prompt_future = Box::pin(session.prompt(user_input, profile, tools));
+    let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
+    let prompt_output = Arc::clone(&streamed_state);
+    let prompt_metrics = Arc::clone(&streamed_state);
+    let tokenizer = cl100k_base().ok();
+    let mut prompt_future = Box::pin(session.prompt(
+        user_input,
+        profile,
+        tools,
+        move |delta| {
+            if let Ok(mut state) = prompt_output.lock() {
+                state.output.push_str(delta);
+            }
+        },
+        move |metrics| {
+            if let Ok(mut state) = prompt_metrics.lock() {
+                state.metrics.merge(metrics);
+            }
+        },
+    ));
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
     let mut thinking_frame = 0usize;
     let thinking_started = Instant::now();
+    let mut last_rendered_output = String::new();
+    let mut last_rendered_metrics = StreamMetrics::default();
     let initial_frame = render_thinking_frame(thinking_frame, thinking_started.elapsed());
 
     print_screen(
@@ -1608,6 +1641,7 @@ async fn wait_for_response(
         header_status,
         output_state.lines(),
         output_state.scroll_offset(),
+        None,
         pending_commands.len(),
         Some(initial_frame.as_str()),
         input_state.as_str(),
@@ -1617,12 +1651,44 @@ async fn wait_for_response(
 
     loop {
         tokio::select! {
-            result = &mut prompt_future => return result.map(WaitResult::Response),
+            result = &mut prompt_future => {
+                let response = result?;
+                let final_state = streamed_state
+                    .lock()
+                    .map(|state| state.clone())
+                    .unwrap_or_default();
+                if let Some(pending_line) = final_pending_line(&final_state.output, &response) {
+                    print_screen(
+                        current_model,
+                        endpoint,
+                        workspace,
+                        prompt_branch,
+                        header_status,
+                        output_state.lines(),
+                        output_state.scroll_offset(),
+                        None,
+                        pending_commands.len(),
+                        Some(pending_line.as_str()),
+                        input_state.as_str(),
+                        input_state.cursor(),
+                    );
+                    std::io::stdout().flush()?;
+                }
+                return Ok(WaitResult::Response(response));
+            }
             _ = interval.tick() => {
                 let elapsed = thinking_started.elapsed();
                 let next_frame = (elapsed.as_millis() / THINKING_FRAME_INTERVAL.as_millis()) as usize;
                 let mut redraw = next_frame != thinking_frame;
                 thinking_frame = next_frame;
+                let current_state = streamed_state
+                    .lock()
+                    .map(|state| state.clone())
+                    .unwrap_or_default();
+                let current_streamed_output = current_state.output;
+                let current_stream_metrics = current_state.metrics;
+                redraw |= current_streamed_output != last_rendered_output;
+                redraw |= current_stream_metrics != last_rendered_metrics;
 
                 while event::poll(Duration::ZERO)? {
                     let result = handle_input_event(
@@ -1659,7 +1725,20 @@ async fn wait_for_response(
                 }
 
                 if redraw {
-                    let pending_line = render_thinking_frame(thinking_frame, elapsed);
+                    last_rendered_output = current_streamed_output;
+                    last_rendered_metrics = current_stream_metrics;
+                    let left_status = render_left_status(
+                        profile,
+                        &last_rendered_output,
+                        &last_rendered_metrics,
+                        elapsed,
+                        tokenizer.as_ref(),
+                    );
+                    let pending_line = if last_rendered_output.is_empty() {
+                        render_thinking_frame(thinking_frame, elapsed)
+                    } else {
+                        last_rendered_output.clone()
+                    };
                     print_screen(
                         current_model,
                         endpoint,
@@ -1668,6 +1747,7 @@ async fn wait_for_response(
                         header_status,
                         output_state.lines(),
                         output_state.scroll_offset(),
+                        left_status.as_deref(),
                         pending_commands.len(),
                         Some(pending_line.as_str()),
                         input_state.as_str(),
@@ -1677,6 +1757,59 @@ async fn wait_for_response(
                 }
             }
         }
+    }
+}
+
+fn render_left_status(
+    profile: &LlmConfiguration,
+    rendered_output: &str,
+    metrics: &StreamMetrics,
+    elapsed: Duration,
+    tokenizer: Option<&tiktoken_rs::CoreBPE>,
+) -> Option<String> {
+    if profile.provider.eq_ignore_ascii_case("llama.cpp") {
+        if let Some(rate) = metrics.predicted_per_second.filter(|rate| *rate > 0.0) {
+            return Some(format!("{rate:.1}t/s"));
+        }
+        if rendered_output.is_empty() {
+            if let Some(rate) = metrics
+                .prompt_progress
+                .as_ref()
+                .and_then(prompt_progress_tokens_per_second)
+            {
+                return Some(format!("{rate:.1}t/s"));
+            }
+            if let Some(rate) = metrics.prompt_per_second.filter(|rate| *rate > 0.0) {
+                return Some(format!("{rate:.1}t/s"));
+            }
+        }
+    }
+
+    if rendered_output.is_empty() {
+        return None;
+    }
+
+    tokenizer.and_then(|tokenizer| {
+        let token_count = tokenizer.encode_with_special_tokens(rendered_output).len();
+        let elapsed_secs = elapsed.as_secs_f64();
+        (token_count > 0 && elapsed_secs > 0.0)
+            .then(|| format!("{:.1}t/s", token_count as f64 / elapsed_secs))
+    })
+}
+
+fn prompt_progress_tokens_per_second(progress: &StreamPromptProgress) -> Option<f64> {
+    let processed = progress.processed.saturating_sub(progress.cache) as f64;
+    let elapsed_secs = progress.time_ms as f64 / 1000.0;
+    (processed > 0.0 && elapsed_secs > 0.0).then_some(processed / elapsed_secs)
+}
+
+fn final_pending_line(streamed_output: &str, response: &str) -> Option<String> {
+    if !streamed_output.is_empty() {
+        Some(streamed_output.to_string())
+    } else if !response.is_empty() {
+        Some(response.to_string())
+    } else {
+        None
     }
 }
 
@@ -1821,12 +1954,18 @@ fn format_tools(tools: &ToolExecutor) -> String {
 mod tests {
     use super::{
         CommandOutcome, LocalCommand, OutputState, completion_candidates, discover_git_dir,
-        discover_git_root, git_workspace_diff, handle_command, parse_local_command,
+        discover_git_root, final_pending_line, git_workspace_diff, handle_command,
+        parse_local_command, prompt_progress_tokens_per_second, render_left_status,
         resolve_workspace_root, shell_words, system_prompt, workspace_branch_name,
     };
-    use orangu::{config::LlmConfiguration, session::ChatSession, tools::ToolExecutor};
+    use orangu::{
+        config::LlmConfiguration,
+        llm::{StreamMetrics, StreamPromptProgress},
+        session::ChatSession,
+        tools::ToolExecutor,
+    };
     use std::collections::HashMap;
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, time::Duration};
     use tempfile::tempdir;
 
     #[test]
@@ -2090,6 +2229,81 @@ mod tests {
         assert_eq!(
             shell_words("\"/tmp/my editor\" --flag").expect("quoted editor command"),
             vec!["/tmp/my editor".to_string(), "--flag".to_string()]
+        );
+    }
+
+    #[test]
+    fn prompt_progress_rate_uses_non_cached_tokens() {
+        let rate = prompt_progress_tokens_per_second(&StreamPromptProgress {
+            total: 100,
+            cache: 20,
+            processed: 60,
+            time_ms: 2_000,
+        });
+
+        assert_eq!(rate, Some(20.0));
+    }
+
+    #[test]
+    fn final_pending_line_keeps_visible_output() {
+        assert_eq!(
+            final_pending_line("streamed reply", "final reply").as_deref(),
+            Some("streamed reply")
+        );
+        assert_eq!(
+            final_pending_line("", "final reply").as_deref(),
+            Some("final reply")
+        );
+        assert_eq!(final_pending_line("", ""), None);
+    }
+
+    #[test]
+    fn llama_cpp_left_status_prefers_native_metrics() {
+        let profile = LlmConfiguration {
+            provider: "llama.cpp".to_string(),
+            model: "model".to_string(),
+            endpoint: "http://localhost:8080/v1".to_string(),
+            api_key: None,
+            request_timeout_seconds: 30,
+            max_tool_rounds: 10,
+            system_prompt: String::new(),
+        };
+
+        assert_eq!(
+            render_left_status(
+                &profile,
+                "",
+                &StreamMetrics {
+                    prompt_progress: Some(StreamPromptProgress {
+                        total: 100,
+                        cache: 20,
+                        processed: 60,
+                        time_ms: 2_000,
+                    }),
+                    prompt_per_second: Some(15.0),
+                    predicted_per_second: None,
+                },
+                Duration::from_secs(2),
+                None,
+            )
+            .as_deref(),
+            Some("20.0t/s")
+        );
+
+        assert_eq!(
+            render_left_status(
+                &profile,
+                "hello",
+                &StreamMetrics {
+                    prompt_progress: None,
+                    prompt_per_second: Some(15.0),
+                    predicted_per_second: Some(42.5),
+                },
+                Duration::from_secs(2),
+                None,
+            )
+            .as_deref(),
+            Some("42.5t/s")
         );
     }
 }
