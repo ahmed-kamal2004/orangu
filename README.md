@@ -1,8 +1,8 @@
 # orangu
 
-**orangu** is a local coding environment for **OpenAI-compatible** servers such as **llama.cpp**.
+**orangu** is a local workspace-aware tool-driven coding environment for **OpenAI-compatible** servers - especially **[llama.cpp](https://github.com/ggml-org/llama.cpp)**.
 
-**orangu** is named after the [orangutan](https://en.wikipedia.org/wiki/Orangutan) and is designed as a workspace-aware terminal client for tool-driven coding tasks.
+**orangu** is named after the [Orangutan](https://en.wikipedia.org/wiki/Orangutan) - the smartest ape.
 
 ![orangu terminal interface](doc/images/orangu-terminal.png)
 
