@@ -22,6 +22,7 @@ The prompt area stays at the bottom of the terminal window.
 - Submitted input moves directly into the output area
 - The banner and prompt stay fixed while the output window scrolls independently
 - Markdown in assistant output is rendered with terminal styling when possible, including emphasis, strong text, lists, headings, links, and code
+- Fenced code blocks with a language tag such as ```c use syntax highlighting in the terminal when the language is supported by the bundled highlighter
 
 ## Waiting state
 

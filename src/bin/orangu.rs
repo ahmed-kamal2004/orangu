@@ -47,8 +47,14 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     process::ExitCode,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
+};
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{Theme, ThemeSet},
+    parsing::SyntaxSet,
+    util::{LinesWithEndings, as_24_bit_terminal_escaped},
 };
 use tiktoken_rs::cl100k_base;
 use walkdir::WalkDir;
@@ -472,6 +478,26 @@ impl Drop for RawModePauseGuard {
     }
 }
 
+struct SyntaxHighlightAssets {
+    syntaxes: SyntaxSet,
+    theme: Theme,
+}
+
+fn syntax_highlight_assets() -> &'static SyntaxHighlightAssets {
+    static ASSETS: OnceLock<SyntaxHighlightAssets> = OnceLock::new();
+    ASSETS.get_or_init(|| {
+        let syntaxes = SyntaxSet::load_defaults_newlines();
+        let themes = ThemeSet::load_defaults();
+        let theme = themes
+            .themes
+            .get("base16-ocean.dark")
+            .cloned()
+            .or_else(|| themes.themes.values().next().cloned())
+            .unwrap_or_default();
+        SyntaxHighlightAssets { syntaxes, theme }
+    })
+}
+
 fn render_markdown_for_console(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -605,14 +631,60 @@ fn render_code_block(language: Option<&str>, value: &str) -> String {
     if value.is_empty() {
         lines.push(String::new());
     } else {
-        lines.extend(
-            value
-                .lines()
-                .map(|line| format!("{ANSI_FG_CODE}{line}{ANSI_FG_RESET}")),
-        );
+        lines.extend(render_syntax_highlighted_code(language, value));
     }
     lines.push(format!("{ANSI_FG_CODE}```{ANSI_FG_RESET}"));
     lines.join("\n")
+}
+
+fn render_syntax_highlighted_code(language: Option<&str>, value: &str) -> Vec<String> {
+    let language = language.and_then(|language| {
+        let trimmed = language.trim();
+        (!trimmed.is_empty()).then_some(trimmed)
+    });
+    let Some(language) = language else {
+        return render_plain_code_lines(value);
+    };
+
+    let assets = syntax_highlight_assets();
+    let Some(syntax) = assets
+        .syntaxes
+        .find_syntax_by_token(language)
+        .or_else(|| assets.syntaxes.find_syntax_by_extension(language))
+    else {
+        return render_plain_code_lines(value);
+    };
+
+    let mut highlighter = HighlightLines::new(syntax, &assets.theme);
+    let mut rendered = Vec::new();
+    for line in LinesWithEndings::from(value) {
+        match highlighter.highlight_line(line, &assets.syntaxes) {
+            Ok(ranges) => {
+                let mut escaped = as_24_bit_terminal_escaped(&ranges, false);
+                while escaped.ends_with('\n') {
+                    escaped.pop();
+                }
+                rendered.push(escaped);
+            }
+            Err(_) => return render_plain_code_lines(value),
+        }
+    }
+    if rendered.is_empty() {
+        render_plain_code_lines(value)
+    } else {
+        rendered
+    }
+}
+
+fn render_plain_code_lines(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        return vec![String::new()];
+    }
+
+    value
+        .lines()
+        .map(|line| format!("{ANSI_FG_CODE}{line}{ANSI_FG_RESET}"))
+        .collect()
 }
 
 fn render_table(rows: &[Node]) -> String {
@@ -2437,6 +2509,23 @@ mod tests {
         assert!(rendered.contains("\x1b[38;2;255;215;120m`code\x1b[39m`"));
         assert!(rendered.contains("docs"));
         assert!(rendered.contains("https://example.com"));
+    }
+
+    #[test]
+    fn renders_fenced_code_blocks_with_syntax_highlighting() {
+        let rendered = render_markdown_for_console("```c\nprintf(\"Hello World !\\\\n\");\n```");
+
+        assert!(rendered.contains("```c"));
+        assert!(rendered.contains("printf"));
+        assert!(rendered.contains("\x1b["));
+    }
+
+    #[test]
+    fn renders_unknown_fenced_code_blocks_with_plain_code_color() {
+        let rendered = render_markdown_for_console("```unknownlang\nplain text\n```");
+
+        assert!(rendered.contains("```unknownlang"));
+        assert!(rendered.contains("\x1b[38;2;255;215;120mplain text\x1b[39m"));
     }
 
     #[test]

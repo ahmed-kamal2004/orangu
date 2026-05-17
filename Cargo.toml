@@ -23,6 +23,7 @@ reqwest = { version = "0.12.24", default-features = false, features = ["json", "
 rustyline = "17.0.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+syntect = "5.3.0"
 terminal_size = "0.4.1"
 tiktoken-rs = "0.6.0"
 tokio = { version = "1.48.0", features = ["full"] }

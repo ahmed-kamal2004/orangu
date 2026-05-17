@@ -22,12 +22,16 @@
 
 ## Features
 
-- OpenAI-compatible chat completions
-- Workspace-aware local tools for files, shell commands, and URL fetching
-- Shell-style prompt editing, history, and completion
+- OpenAI-compatible chat completions, with special attention to llama.cpp workflows
+- Workspace-aware local tools for reading, editing, listing, fetching, and shell commands
+- Persistent terminal UI with workspace, server, and model status in the header
+- Shell-style prompt editing, history, scrolling, and context-sensitive Tab completion
 - Local commands such as `/help`, `/list_models`, `/list_files`, `/tools`, `/diff`, and `/open_file`
-- Natural-language command aliases such as `open README.md`, `list models`, `list files`, and `show help`
-- Streaming responses with terminal status updates
+- Natural-language local aliases such as `open README.md`, `list models`, `list files`, and `show help`
+- Streaming responses with live footer status such as `Thinking (...)` and llama.cpp-native `Working @ X.Y t/s (...)`
+- Queued local commands while a response is in flight, plus double-`Esc` request cancellation
+- Markdown rendering in the console, including bold, italic, headings, lists, links, and code
+- Syntax highlighting for fenced code blocks in supported programming languages
 
 ## Installation
 
