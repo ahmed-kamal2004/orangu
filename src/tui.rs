@@ -41,7 +41,6 @@ const CLIENT_LOGO_ART: &[&str] = &[
 const ORANGU_BROWN: &str = "\x1b[38;2;139;90;43m";
 const STATUS_GREEN: &str = "\x1b[38;2;80;200;120m";
 const STATUS_RED: &str = "\x1b[38;2;220;80;80m";
-const THINKING_TIMER: &str = "\x1b[2m";
 const ANSI_RESET: &str = "\x1b[0m";
 const THINKING_TEXT: &str = "Thinking";
 const WORKING_TEXT: &str = "Working";
@@ -231,14 +230,17 @@ pub fn output_view_rows(
     available_output_rows(header_line_count, prompt_frame_height, height)
 }
 
-pub fn render_thinking_frame(frame: usize, elapsed: Duration) -> String {
-    let mut rendered = render_rolling_text(THINKING_TEXT, frame);
-    rendered.push(' ');
-    rendered.push_str(THINKING_TIMER);
-    rendered.push_str(&format_elapsed_timer(elapsed));
-    rendered.push_str(ANSI_RESET);
-
-    rendered
+pub fn render_thinking_status(frame: usize, elapsed: Duration) -> StatusFragment {
+    let suffix = format!(" {}", format_elapsed_timer(elapsed));
+    StatusFragment {
+        rendered: format!(
+            "{}{}{}",
+            render_rolling_text(THINKING_TEXT, frame),
+            ANSI_RESET,
+            suffix
+        ),
+        visible_width: THINKING_TEXT.chars().count() + suffix.chars().count(),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -570,26 +572,27 @@ impl Completer for OranguHelper {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANSI_RESET, StatusFragment, THINKING_TEXT, WORKING_TEXT, available_output_rows,
-        prompt_prefix, render_status_line, render_thinking_frame, render_working_status,
-        wrapped_input_lines,
+        StatusFragment, THINKING_TEXT, WORKING_TEXT, available_output_rows, prompt_prefix,
+        render_status_line, render_thinking_status, render_working_status, wrapped_input_lines,
     };
     use std::time::Duration;
 
     #[test]
-    fn thinking_frames_roll_across_characters() {
-        let frame_zero = render_thinking_frame(0, Duration::from_secs(61));
-        let frame_one = render_thinking_frame(1, Duration::from_secs(61));
+    fn thinking_status_rolls_and_formats_elapsed() {
+        let frame_zero = render_thinking_status(0, Duration::from_secs(61));
+        let frame_one = render_thinking_status(1, Duration::from_secs(61));
 
-        assert!(frame_zero.contains('T'));
-        assert!(frame_zero.contains('g'));
-        assert!(frame_zero.ends_with(ANSI_RESET));
-        assert!(frame_one.ends_with(ANSI_RESET));
-        assert_ne!(frame_zero, frame_one);
-        assert!(frame_zero.contains("(1m1s)"));
-        assert!(frame_one.contains("(1m1s)"));
+        assert!(frame_zero.rendered.contains('T'));
+        assert!(frame_zero.rendered.contains('g'));
+        assert_ne!(frame_zero.rendered, frame_one.rendered);
+        assert!(frame_zero.rendered.contains("(1m1s)"));
+        assert!(frame_one.rendered.contains("(1m1s)"));
+        assert_eq!(
+            frame_zero.visible_width,
+            THINKING_TEXT.chars().count() + " (1m1s)".chars().count()
+        );
         for ch in THINKING_TEXT.chars() {
-            assert!(frame_zero.contains(ch));
+            assert!(frame_zero.rendered.contains(ch));
         }
     }
 

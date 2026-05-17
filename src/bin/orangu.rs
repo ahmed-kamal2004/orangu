@@ -26,12 +26,12 @@ use crossterm::{
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use orangu::{
     config::{LlmConfiguration, default_client_config_path, load_client_configuration},
-    llm::{StreamMetrics, StreamPromptProgress, normalized_openai_endpoint},
+    llm::{StreamMetrics, normalized_openai_endpoint},
     session::ChatSession,
     tools::{ToolExecutor, resolve_workspace_path},
     tui::{
         HeaderStatus, ScreenRenderArgs, StatusFragment, help_text, output_view_rows, render_screen,
-        render_thinking_frame, render_working_status,
+        render_thinking_status, render_working_status,
     },
 };
 use serde::Deserialize;
@@ -1710,16 +1710,16 @@ async fn wait_for_response(
     let mut last_rendered_output = String::new();
     let mut last_rendered_metrics = StreamMetrics::default();
     let mut escape_cancel_state = EscapeCancelState::default();
-    let initial_frame = render_thinking_frame(thinking_frame, thinking_started.elapsed());
+    let initial_status = render_thinking_status(thinking_frame, thinking_started.elapsed());
 
     print_screen(
         render,
         ScreenState {
             transcript: output_state.lines(),
             scroll_offset: output_state.scroll_offset(),
-            left_status: None,
+            left_status: Some(initial_status),
             pending_count: pending_commands.len(),
-            pending_line: Some(initial_frame.as_str()),
+            pending_line: None,
             input: input_state.as_str(),
             cursor: input_state.cursor(),
         },
@@ -1819,7 +1819,7 @@ async fn wait_for_response(
                         tokenizer.as_ref(),
                     );
                     let pending_line = if last_rendered_output.is_empty() {
-                        render_thinking_frame(thinking_frame, elapsed)
+                        String::new()
                     } else {
                         last_rendered_output.clone()
                     };
@@ -1850,6 +1850,10 @@ fn render_left_status(
     frame: usize,
     tokenizer: Option<&tiktoken_rs::CoreBPE>,
 ) -> Option<StatusFragment> {
+    if rendered_output.is_empty() {
+        return Some(render_thinking_status(frame, elapsed));
+    }
+
     if profile.provider.eq_ignore_ascii_case("llama.cpp") {
         if let Some(rate) = metrics
             .predicted_per_second
@@ -1857,22 +1861,6 @@ fn render_left_status(
         {
             return Some(render_working_status(frame, rate, elapsed));
         }
-        if rendered_output.is_empty() {
-            if let Some(rate) = metrics
-                .prompt_progress
-                .as_ref()
-                .and_then(prompt_progress_tokens_per_second)
-            {
-                return Some(StatusFragment::plain(format!("{rate:.1}t/s")));
-            }
-            if let Some(rate) = metrics.prompt_per_second.filter(|rate| *rate > 0.0) {
-                return Some(StatusFragment::plain(format!("{rate:.1}t/s")));
-            }
-        }
-    }
-
-    if rendered_output.is_empty() {
-        return None;
     }
 
     tokenizer.and_then(|tokenizer| {
@@ -1881,12 +1869,6 @@ fn render_left_status(
         (token_count > 0 && elapsed_secs > 0.0)
             .then(|| StatusFragment::plain(format!("{:.1}t/s", token_count as f64 / elapsed_secs)))
     })
-}
-
-fn prompt_progress_tokens_per_second(progress: &StreamPromptProgress) -> Option<f64> {
-    let processed = progress.processed.saturating_sub(progress.cache) as f64;
-    let elapsed_secs = progress.time_ms as f64 / 1000.0;
-    (processed > 0.0 && elapsed_secs > 0.0).then_some(processed / elapsed_secs)
 }
 
 fn is_wait_cancel_escape(event: &Event) -> bool {
@@ -2063,8 +2045,8 @@ mod tests {
         CommandContext, CommandOutcome, CommandState, EscapeCancelState, LocalCommand, OutputState,
         completion_candidates, discover_git_dir, discover_git_root, final_pending_line,
         git_workspace_diff, handle_command, is_wait_cancel_escape, llm_prompt_block_reason,
-        parse_local_command, prompt_progress_tokens_per_second, render_left_status,
-        resolve_workspace_root, shell_words, system_prompt, workspace_branch_name,
+        parse_local_command, render_left_status, resolve_workspace_root, shell_words,
+        system_prompt, workspace_branch_name,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use orangu::{
@@ -2072,7 +2054,7 @@ mod tests {
         llm::{StreamMetrics, StreamPromptProgress, normalized_openai_endpoint},
         session::ChatSession,
         tools::ToolExecutor,
-        tui::{HeaderStatus, StatusFragment},
+        tui::HeaderStatus,
     };
     use std::collections::HashMap;
     use std::{
@@ -2448,18 +2430,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_progress_rate_uses_non_cached_tokens() {
-        let rate = prompt_progress_tokens_per_second(&StreamPromptProgress {
-            total: 100,
-            cache: 20,
-            processed: 60,
-            time_ms: 2_000,
-        });
-
-        assert_eq!(rate, Some(20.0));
-    }
-
-    #[test]
     fn final_pending_line_keeps_visible_output() {
         assert_eq!(
             final_pending_line("streamed reply", "final reply").as_deref(),
@@ -2537,27 +2507,29 @@ mod tests {
             system_prompt: String::new(),
         };
 
-        assert_eq!(
-            render_left_status(
-                &profile,
-                "",
-                &StreamMetrics {
-                    prompt_progress: Some(StreamPromptProgress {
-                        total: 100,
-                        cache: 20,
-                        processed: 60,
-                        time_ms: 2_000,
-                    }),
-                    prompt_per_second: Some(15.0),
-                    predicted_per_second: None,
-                },
-                Duration::from_secs(2),
-                0,
-                None,
-            )
-            .as_ref(),
-            Some(&StatusFragment::plain("20.0t/s".to_string()))
-        );
+        let thinking = render_left_status(
+            &profile,
+            "",
+            &StreamMetrics {
+                prompt_progress: Some(StreamPromptProgress {
+                    total: 100,
+                    cache: 20,
+                    processed: 60,
+                    time_ms: 2_000,
+                }),
+                prompt_per_second: Some(15.0),
+                predicted_per_second: None,
+            },
+            Duration::from_secs(2),
+            0,
+            None,
+        )
+        .expect("thinking status");
+        for ch in "Thinking".chars() {
+            assert!(thinking.rendered.contains(ch));
+        }
+        assert!(thinking.rendered.contains("(2s)"));
+        assert_eq!(thinking.visible_width, "Thinking (2s)".chars().count());
 
         let working = render_left_status(
             &profile,
