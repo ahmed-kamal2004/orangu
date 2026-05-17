@@ -24,6 +24,11 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use markdown::{
+    ParseOptions,
+    mdast::{List, ListItem, Node},
+    to_mdast,
+};
 use orangu::{
     config::{LlmConfiguration, default_client_config_path, load_client_configuration},
     llm::{StreamMetrics, normalized_openai_endpoint},
@@ -54,6 +59,18 @@ const TERMINAL_TITLE: &str = "orangu";
 const CTRL_C_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
 const ESC_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
 const CTRL_C_EXIT_MESSAGE: &str = "Press Ctrl+c again to quit";
+const ANSI_BOLD_ON: &str = "\x1b[1m";
+const ANSI_BOLD_OFF: &str = "\x1b[22m";
+const ANSI_ITALIC_ON: &str = "\x1b[3m";
+const ANSI_ITALIC_OFF: &str = "\x1b[23m";
+const ANSI_UNDERLINE_ON: &str = "\x1b[4m";
+const ANSI_UNDERLINE_OFF: &str = "\x1b[24m";
+const ANSI_STRIKETHROUGH_ON: &str = "\x1b[9m";
+const ANSI_STRIKETHROUGH_OFF: &str = "\x1b[29m";
+const ANSI_FG_CODE: &str = "\x1b[38;2;255;215;120m";
+const ANSI_FG_LINK: &str = "\x1b[38;2;102;178;255m";
+const ANSI_FG_SUBTLE: &str = "\x1b[38;2;180;190;205m";
+const ANSI_FG_RESET: &str = "\x1b[39m";
 const THINKING_FRAME_INTERVAL: Duration = Duration::from_millis(120);
 const WAIT_LOOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TRANSCRIPT_MAX_LINES: usize = 10_000;
@@ -299,7 +316,7 @@ async fn run() -> Result<()> {
         )
         .await
         {
-            Ok(WaitResult::Response(answer)) => output_state.push_text(&answer),
+            Ok(WaitResult::Response(answer)) => output_state.push_markdown(&answer),
             Ok(WaitResult::Cancelled) => output_state.push_text("Request cancelled."),
             Ok(WaitResult::Quit) => {
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
@@ -346,6 +363,10 @@ impl OutputState {
             self.transcript.drain(0..excess);
             self.scroll_offset = self.scroll_offset.saturating_sub(excess);
         }
+    }
+
+    fn push_markdown(&mut self, text: &str) {
+        self.push_text(&render_markdown_for_console(text));
     }
 
     fn reset_scroll(&mut self) {
@@ -449,6 +470,205 @@ impl Drop for RawModePauseGuard {
     fn drop(&mut self) {
         let _ = enable_raw_mode();
     }
+}
+
+fn render_markdown_for_console(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    match to_mdast(text, &ParseOptions::default()) {
+        Ok(tree) => render_markdown_node(&tree),
+        Err(_) => text.to_string(),
+    }
+}
+
+fn render_markdown_node(node: &Node) -> String {
+    match node {
+        Node::Root(root) => render_block_nodes(&root.children, false),
+        Node::Paragraph(paragraph) => render_inline_nodes(&paragraph.children),
+        Node::Heading(heading) => format!(
+            "{ANSI_BOLD_ON}{} {}{ANSI_BOLD_OFF}",
+            "#".repeat(heading.depth.into()),
+            render_inline_nodes(&heading.children)
+        ),
+        Node::Blockquote(blockquote) => {
+            prefix_lines(&render_block_nodes(&blockquote.children, false), "> ")
+        }
+        Node::List(list) => render_list(list),
+        Node::ListItem(item) => render_list_item(item, "-", 2),
+        Node::Code(code) => render_code_block(code.lang.as_deref(), &code.value),
+        Node::ThematicBreak(_) => "-".repeat(40),
+        Node::Table(table) => render_table(&table.children),
+        Node::Definition(_) => String::new(),
+        Node::Break(_) => "\n".to_string(),
+        _ => render_inline_node(node),
+    }
+}
+
+fn render_block_nodes(nodes: &[Node], compact: bool) -> String {
+    let separator = if compact { "\n" } else { "\n\n" };
+    nodes
+        .iter()
+        .map(render_markdown_node)
+        .filter(|rendered| !rendered.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn render_inline_nodes(nodes: &[Node]) -> String {
+    nodes.iter().map(render_inline_node).collect()
+}
+
+fn render_inline_node(node: &Node) -> String {
+    match node {
+        Node::Text(text) => text.value.clone(),
+        Node::Strong(strong) => format!(
+            "{ANSI_BOLD_ON}{}{ANSI_BOLD_OFF}",
+            render_inline_nodes(&strong.children)
+        ),
+        Node::Emphasis(emphasis) => format!(
+            "{ANSI_ITALIC_ON}{}{ANSI_ITALIC_OFF}",
+            render_inline_nodes(&emphasis.children)
+        ),
+        Node::Delete(delete) => format!(
+            "{ANSI_STRIKETHROUGH_ON}{}{ANSI_STRIKETHROUGH_OFF}",
+            render_inline_nodes(&delete.children)
+        ),
+        Node::InlineCode(code) => {
+            format!("{ANSI_FG_CODE}`{}{ANSI_FG_RESET}`", code.value)
+        }
+        Node::InlineMath(math) => {
+            format!("{ANSI_FG_CODE}${}{ANSI_FG_RESET}$", math.value)
+        }
+        Node::Link(link) => render_link(&render_inline_nodes(&link.children), &link.url),
+        Node::LinkReference(link) => render_inline_nodes(&link.children),
+        Node::Image(image) => format!("[image: {}] ({})", image.alt, image.url),
+        Node::ImageReference(image) => format!("[image: {}]", image.alt),
+        Node::FootnoteReference(reference) => format!("[^{}]", reference.identifier),
+        Node::Break(_) => "\n".to_string(),
+        Node::Html(html) => html.value.clone(),
+        Node::Math(math) => math.value.clone(),
+        Node::MdxFlowExpression(expression) => expression.value.clone(),
+        Node::MdxTextExpression(expression) => expression.value.clone(),
+        Node::MdxjsEsm(esm) => esm.value.clone(),
+        Node::Toml(toml) => toml.value.clone(),
+        Node::Yaml(yaml) => yaml.value.clone(),
+        _ => render_markdown_node(node),
+    }
+}
+
+fn render_link(label: &str, url: &str) -> String {
+    if label.is_empty() || label == url {
+        return format!(
+            "{ANSI_FG_LINK}{ANSI_UNDERLINE_ON}{url}{ANSI_UNDERLINE_OFF}{ANSI_FG_RESET}"
+        );
+    }
+
+    format!(
+        "{ANSI_FG_LINK}{ANSI_UNDERLINE_ON}{label}{ANSI_UNDERLINE_OFF}{ANSI_FG_RESET}{ANSI_FG_SUBTLE} ({url}){ANSI_FG_RESET}"
+    )
+}
+
+fn render_list(list: &List) -> String {
+    let start = list.start.unwrap_or(1);
+    list.children
+        .iter()
+        .enumerate()
+        .filter_map(|(index, child)| match child {
+            Node::ListItem(item) => {
+                let marker = if list.ordered {
+                    format!("{}.", start + index as u32)
+                } else {
+                    "-".to_string()
+                };
+                Some(render_list_item(item, &marker, marker.len() + 1))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_list_item(item: &ListItem, marker: &str, indent: usize) -> String {
+    let body = render_block_nodes(&item.children, !item.spread);
+    indent_lines(&body, &format!("{marker} "), &" ".repeat(indent))
+}
+
+fn render_code_block(language: Option<&str>, value: &str) -> String {
+    let mut lines = Vec::new();
+    let opener = match language {
+        Some(language) if !language.is_empty() => format!("```{language}"),
+        _ => "```".to_string(),
+    };
+    lines.push(format!("{ANSI_FG_CODE}{opener}{ANSI_FG_RESET}"));
+    if value.is_empty() {
+        lines.push(String::new());
+    } else {
+        lines.extend(
+            value
+                .lines()
+                .map(|line| format!("{ANSI_FG_CODE}{line}{ANSI_FG_RESET}")),
+        );
+    }
+    lines.push(format!("{ANSI_FG_CODE}```{ANSI_FG_RESET}"));
+    lines.join("\n")
+}
+
+fn render_table(rows: &[Node]) -> String {
+    let rendered_rows = rows
+        .iter()
+        .filter_map(|row| match row {
+            Node::TableRow(row) => Some(
+                row.children
+                    .iter()
+                    .filter_map(|cell| match cell {
+                        Node::TableCell(cell) => Some(render_inline_nodes(&cell.children)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if rendered_rows.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::with_capacity(rendered_rows.len() + 1);
+    for (index, row) in rendered_rows.iter().enumerate() {
+        lines.push(format!("| {} |", row.join(" | ")));
+        if index == 0 {
+            lines.push(format!(
+                "| {} |",
+                row.iter().map(|_| "---").collect::<Vec<_>>().join(" | ")
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn prefix_lines(text: &str, prefix: &str) -> String {
+    text.lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn indent_lines(text: &str, first_prefix: &str, rest_prefix: &str) -> String {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 {
+                first_prefix
+            } else {
+                rest_prefix
+            };
+            format!("{prefix}{line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[derive(Default)]
@@ -1817,7 +2037,9 @@ async fn wait_for_response(
                     .lock()
                     .map(|state| state.clone())
                     .unwrap_or_default();
-                if let Some(pending_line) = final_pending_line(&final_state.output, &response) {
+                if let Some(pending_line) = final_pending_line(&final_state.output, &response)
+                    .map(|line| render_markdown_for_console(&line))
+                {
                     print_screen(
                         render,
                         ScreenState {
@@ -1904,7 +2126,7 @@ async fn wait_for_response(
                     let pending_line = if last_rendered_output.is_empty() {
                         String::new()
                     } else {
-                        last_rendered_output.clone()
+                        render_markdown_for_console(&last_rendered_output)
                     };
                     print_screen(
                         render,
@@ -2127,8 +2349,9 @@ mod tests {
         CommandContext, CommandOutcome, CommandState, EscapeCancelState, LocalCommand, OutputState,
         completion_candidates, discover_git_dir, discover_git_root, final_pending_line,
         git_workspace_diff, handle_command, is_wait_cancel_escape, list_workspace_files_tree,
-        llm_prompt_block_reason, parse_local_command, render_left_status, resolve_workspace_root,
-        shell_words, system_prompt, workspace_branch_name,
+        llm_prompt_block_reason, parse_local_command, render_left_status,
+        render_markdown_for_console, resolve_workspace_root, shell_words, system_prompt,
+        workspace_branch_name,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use orangu::{
@@ -2192,6 +2415,28 @@ mod tests {
             output_state.lines().last().map(String::as_str),
             Some("line 10004")
         );
+    }
+
+    #[test]
+    fn renders_markdown_emphasis_for_console() {
+        let rendered = render_markdown_for_console("Hello **bold** and *italic*.");
+
+        assert!(rendered.contains("\x1b[1mbold\x1b[22m"));
+        assert!(rendered.contains("\x1b[3mitalic\x1b[23m"));
+    }
+
+    #[test]
+    fn renders_markdown_blocks_for_console() {
+        let rendered = render_markdown_for_console(
+            "# Title\n\n- one\n- two\n\n`code`\n\n[docs](https://example.com)",
+        );
+
+        assert!(rendered.contains("\x1b[1m# Title\x1b[22m"));
+        assert!(rendered.contains("- one"));
+        assert!(rendered.contains("- two"));
+        assert!(rendered.contains("\x1b[38;2;255;215;120m`code\x1b[39m`"));
+        assert!(rendered.contains("docs"));
+        assert!(rendered.contains("https://example.com"));
     }
 
     #[test]

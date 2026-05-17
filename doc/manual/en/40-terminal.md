@@ -21,6 +21,7 @@ The prompt area stays at the bottom of the terminal window.
 - Long input wraps upward
 - Submitted input moves directly into the output area
 - The banner and prompt stay fixed while the output window scrolls independently
+- Markdown in assistant output is rendered with terminal styling when possible, including emphasis, strong text, lists, headings, links, and code
 
 ## Waiting state
 
