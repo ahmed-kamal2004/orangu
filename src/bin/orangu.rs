@@ -1847,7 +1847,7 @@ fn render_left_status(
             .predicted_per_second
             .filter(|rate| *rate > 0.0 && !rendered_output.is_empty())
         {
-            return Some(render_working_status(frame, rate));
+            return Some(render_working_status(frame, rate, elapsed));
         }
         if rendered_output.is_empty() {
             if let Some(rate) = metrics
@@ -2532,6 +2532,10 @@ mod tests {
             assert!(working.rendered.contains(ch));
         }
         assert!(working.rendered.contains("42.5 t/s"));
-        assert_eq!(working.visible_width, "Working @ 42.5 t/s".chars().count());
+        assert!(working.rendered.contains("(2s)"));
+        assert_eq!(
+            working.visible_width,
+            "Working @ 42.5 t/s (2s)".chars().count()
+        );
     }
 }

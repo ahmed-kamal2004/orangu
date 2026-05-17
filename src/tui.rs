@@ -257,8 +257,8 @@ impl StatusFragment {
     }
 }
 
-pub fn render_working_status(frame: usize, rate: f64) -> StatusFragment {
-    let suffix = format!(" @ {rate:.1} t/s");
+pub fn render_working_status(frame: usize, rate: f64, elapsed: Duration) -> StatusFragment {
+    let suffix = format!(" @ {rate:.1} t/s {}", format_elapsed_timer(elapsed));
     StatusFragment {
         rendered: format!(
             "{}{}{}",
@@ -595,13 +595,14 @@ mod tests {
 
     #[test]
     fn working_status_rolls_and_formats_rate() {
-        let frame_zero = render_working_status(0, 42.5);
-        let frame_one = render_working_status(1, 42.5);
+        let frame_zero = render_working_status(0, 42.5, Duration::from_secs(65));
+        let frame_one = render_working_status(1, 42.5, Duration::from_secs(65));
 
         assert!(frame_zero.rendered.contains("42.5 t/s"));
+        assert!(frame_zero.rendered.contains("(1m5s)"));
         assert_eq!(
             frame_zero.visible_width,
-            WORKING_TEXT.chars().count() + " @ 42.5 t/s".chars().count()
+            WORKING_TEXT.chars().count() + " @ 42.5 t/s (1m5s)".chars().count()
         );
         assert_ne!(frame_zero.rendered, frame_one.rendered);
     }
