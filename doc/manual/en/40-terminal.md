@@ -58,19 +58,17 @@ All slash commands are handled locally. They are not sent to the model.
 
 | Command | Description |
 | :-- | :-- |
-| `/help` | Show the local command reference |
-| `/connect` | Reconnect to the configured endpoint of the active model profile |
-| `/connect <url>` | Set a specific current server target |
-| `/disconnect` | Disconnect from the current server target |
-| `/reload` | Restore the startup model and configured server target and clear the current conversation |
-| `/list_models` | Show configured model profiles |
-| `/list_files` | Show a recursive Unicode tree of the workspace, excluding `.git/`, `build/`, and `target/` |
-| `/tools` | Show the tool definitions exposed to the model |
-| `/model` | Show a reminder to use `/list_models` |
-| `/model <name>` | Switch to a configured model profile |
-| `/diff` | Show a colorized unified Git diff for the current workspace |
-| `/open_file <path>` | Open a workspace file in the editor defined by `$EDITOR` |
-| `/clear` | Clear the current conversation and reset the system prompt for the active profile |
+| `/help` | Show available commands |
+| `/connect [url]` | Connect to the configured server, or a specific server |
+| `/disconnect` | Disconnect from the current server |
+| `/reload` | Restore the configured model and server |
+| `/list_models` | List models |
+| `/list_files` | List workspace files as a tree |
+| `/tools` | List tools |
+| `/model [name]` | Switch to the configured model, or a specific model |
+| `/diff` | Show a color unified diff against the current branch |
+| `/open_file <path>` | Open a workspace file in $EDITOR |
+| `/clear` | Clear the current conversation |
 | `/quit` | Exit the client |
 
 Local commands continue to work even when the model is unavailable.
@@ -108,23 +106,46 @@ Natural-language forms are recognized only for the built-in local command phrase
 
 ### Prompt editing
 
-- `Ctrl+A`
-- `Ctrl+E`
-- `Ctrl+K`
-- `Ctrl+U`
-- `Ctrl+W`
-- `Home`
-- `End`
-- `Left`
-- `Right`
+- `Ctrl+A` or `Home` moves the cursor to the start of the input line
+- `Ctrl+E` or `End` moves the cursor to the end of the input line
+- `Left` moves the cursor one character left
+- `Right` moves the cursor one character right
+- `Backspace` deletes the character to the left of the cursor
+- `Delete` deletes the character under the cursor
+- `Ctrl+D` behaves like `Delete`; when the input is empty it exits the client immediately
+- `Ctrl+K` deletes from the cursor to the end of the line
+- `Ctrl+U` deletes from the start of the line to the cursor
+- `Ctrl+W` deletes the word immediately before the cursor
+- Pasted text is inserted at the current cursor position
 
 ### History and completion
 
-- `<ARROW_UP>` history backward
-- `<ARROW_DOWN>` history forward
-- `Tab` completion for slash commands and `/model`
-- File completion across the project for paths, including `/open_file <path>` and `open <path>`
-- File completion skips `.git` content and paths ignored by the workspace `.gitignore`
+- `<ARROW_UP>` moves backward through command history
+- `<ARROW_DOWN>` moves forward through command history
+- History navigation preserves the current unfinished line as a draft and restores it when you move back out of history
+
+### Tab completion
+
+`Tab` uses context-sensitive completion. The first `Tab` inserts the first match. Repeated `Tab` presses cycle through the remaining matches for the same completion range.
+
+Completion cycling is reset as soon as you edit the line, move the cursor, paste text, or otherwise change the input.
+
+The completion modes are:
+
+1. If the line starts with `/`, complete built-in slash commands such as `/help`, `/list_models`, `/list_files`, `/tools`, and `/quit`.
+2. If the line starts with `/model `, complete configured model profile names.
+3. If the line starts with `/open_file `, complete workspace file paths recursively.
+4. If the line starts with the natural-language prefixes `open `, `open file `, `edit `, or `edit file `, complete workspace file paths recursively.
+5. Otherwise, complete filesystem entries from the current token relative to the workspace, using the token before the cursor.
+
+Path-completion details:
+
+- General filesystem completion lists entries from the matching directory level and appends `/` to directories
+- `/open_file` and the natural-language open/edit forms search recursively through the workspace
+- Recursive file completion matches either the full relative path or, when no `/` is present in the token, the file name
+- Quoted file completion is supported for `/open_file "..."` and `open "..."`; the inserted completion keeps the opening quote
+- Completion skips `.git` content
+- Completion also skips paths ignored by the workspace `.gitignore`
 
 ### Output scrolling
 
@@ -136,11 +157,12 @@ Natural-language forms are recognized only for the built-in local command phrase
 ### Waiting and exit control
 
 - `Esc` twice within 2 seconds cancels the active request without exiting and keeps queued commands
-- `Ctrl+C` once arms quit mode
+- `Ctrl+C` once arms quit mode, shows a warning in the transcript, and clears the current input line
 - `Ctrl+C` again within 2 seconds exits the client
+- `Enter` submits the current input line
 
 ## Footer behavior
 
-- The footer centers `Pending: X` to show how many queued commands are waiting
-- The left side of the footer shows `Thinking (<CLOCK>)` while waiting for a response to start
-- For llama.cpp profiles, the left side switches to `Working @ X.Y t/s (<CLOCK>)` while tokens are streaming
+- The left side of the footer shows `Thinking (<CLOCK>)` while waiting for a response to start, and `Working @ X.Y t/s (<CLOCK>)` while tokens are streaming
+- The center side of the footer shows `Pending: X` to show how many queued commands are waiting
+- The right side of the footer shows the model name used
