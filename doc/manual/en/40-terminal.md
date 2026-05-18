@@ -81,7 +81,7 @@ Free-form prompts are blocked when the server or model status in the header is r
 
 - `/tools` lists the model-facing workspace tools described in the tools chapter
 - `/open_file <path>` is workspace-scoped; paths outside the workspace are rejected
-- `/show_file [--hash] [--author] <path>` is workspace-scoped, syntax highlights the file content, and can prepend Git blame hash and author columns when the workspace is a Git repository
+- `/show_file [--hash] [--author] <path>` is workspace-scoped; when `bat` is installed it is used for the plain file view, otherwise the built-in syntax-highlighted renderer is used, and Git blame hash/author columns still use the built-in renderer
 - `/diff` uses `git diff` inside Git repositories and applies configured non-interactive Git pagers such as `delta`; outside Git repositories it keeps the existing non-Git behavior
 - `/list_files` is a local convenience command and is separate from the model-facing `list_directory` tool
 - `/reload` also clears the current conversation history in memory
@@ -93,6 +93,7 @@ Free-form prompts are blocked when the server or model status in the header is r
 Local commands can also be entered in plain language. Examples:
 
 - `open README.md`
+- `show README.md`
 - `list models`
 - `list files`
 - `show tools`

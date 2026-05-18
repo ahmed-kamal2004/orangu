@@ -56,6 +56,7 @@ Built-in commands also accept natural-language forms, for example:
 
 ```text
 open README.md
+show README.md
 list models
 list files
 show help

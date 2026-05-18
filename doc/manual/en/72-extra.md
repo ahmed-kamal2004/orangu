@@ -28,3 +28,23 @@ Then configure Git to use it. A minimal setup is:
 Please refer to the upstream documentation for full installation and configuration details:
 
 <https://github.com/dandavison/delta>
+
+### bat
+
+[**bat**](https://github.com/sharkdp/bat/) is an optional `cat` clone with syntax highlighting and Git integration.
+
+If it is installed, **orangu** will use it for plain `/show_file` output.
+
+**Installation**
+
+Install `bat` using your platform package manager or one of the installation methods described in the upstream project.
+
+On Fedora, for example:
+
+```sh
+sudo dnf install bat
+```
+
+Please refer to the upstream documentation for full installation and configuration details:
+
+<https://github.com/sharkdp/bat/>

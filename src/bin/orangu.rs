@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Error, Result, anyhow};
 use clap::Parser;
 use crossterm::{
     event::{
@@ -40,6 +40,7 @@ use orangu::{
     },
 };
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::{
     collections::HashMap,
     collections::VecDeque,
@@ -516,6 +517,12 @@ fn syntax_highlight_assets() -> &'static SyntaxHighlightAssets {
 fn show_file_output(workspace: &Path, raw_args: &str) -> Result<String> {
     let (path, options) = parse_show_file_arguments(raw_args)?;
     let resolved_path = resolve_workspace_path(workspace, &path)?;
+    if !options.show_hash
+        && !options.show_author
+        && let Some(output) = show_file_output_with_bat(&resolved_path)?
+    {
+        return Ok(output);
+    }
     let content = fs::read_to_string(&resolved_path)
         .with_context(|| format!("failed to read {}", resolved_path.display()))?;
     let blame = if options.show_hash || options.show_author {
@@ -527,9 +534,42 @@ fn show_file_output(workspace: &Path, raw_args: &str) -> Result<String> {
     render_show_file_content(&resolved_path, &content, blame.as_deref(), options)
 }
 
+fn show_file_output_with_bat(path: &Path) -> Result<Option<String>> {
+    let output = match std::process::Command::new("bat")
+        .arg("--paging=never")
+        .arg("--color=always")
+        .arg("--style=numbers")
+        .arg("--terminal-width")
+        .arg(current_terminal_width().to_string())
+        .arg(path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to run bat for {}", path.display()));
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "bat failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+
+    String::from_utf8(output.stdout)
+        .map(Some)
+        .with_context(|| format!("bat output for {} was not UTF-8", path.display()))
+}
+
 fn parse_show_file_arguments(raw_args: &str) -> Result<(String, ShowFileOptions)> {
-    let args = shell_words(raw_args)
-        .map_err(|_| anyhow!("Usage: /show_file [--hash] [--author] <path>"))?;
+    let args = shell_words(raw_args).map_err(|_| anyhow!(show_file_usage_message()))?;
     let mut options = ShowFileOptions::default();
     let mut path = None;
 
@@ -539,18 +579,44 @@ fn parse_show_file_arguments(raw_args: &str) -> Result<(String, ShowFileOptions)
             "--author" => options.show_author = true,
             _ if arg.starts_with('-') => {
                 return Err(anyhow!(
-                    "Unknown option '{arg}'. Usage: /show_file [--hash] [--author] <path>"
+                    "Unknown option '{arg}'. {}",
+                    show_file_usage_message()
                 ));
             }
             _ if path.is_none() => path = Some(arg),
             _ => {
-                return Err(anyhow!("Usage: /show_file [--hash] [--author] <path>"));
+                return Err(anyhow!(show_file_usage_message()));
             }
         }
     }
 
-    let path = path.ok_or_else(|| anyhow!("Usage: /show_file [--hash] [--author] <path>"))?;
+    let path = path.ok_or_else(|| anyhow!(show_file_usage_message()))?;
     Ok((path, options))
+}
+
+fn open_file_usage_message() -> &'static str {
+    "Usage: /open_file <path>. Use /help to see available commands."
+}
+
+fn show_file_usage_message() -> &'static str {
+    "Usage: /show_file [--hash] [--author] <path>. Use /help to see available commands."
+}
+
+fn model_usage_message() -> &'static str {
+    "Usage: /model <name>. Use /help to see available commands."
+}
+
+fn connect_usage_message() -> &'static str {
+    "Usage: /connect <endpoint>. Use /help to see available commands."
+}
+
+fn local_command_error(err: Error) -> CommandOutcome {
+    let message = format!("{err:#}");
+    if message.starts_with("Usage: ") {
+        CommandOutcome::Output(message)
+    } else {
+        CommandOutcome::Output(format!("Error: {message}"))
+    }
 }
 
 fn render_show_file_content(
@@ -1482,6 +1548,14 @@ fn completion_candidates(
         ));
     }
 
+    if let Some((start, path_prefix)) = natural_show_file_completion_prefix(prefix) {
+        return Some((
+            start,
+            cursor,
+            open_file_completion_candidates(path_prefix, workspace),
+        ));
+    }
+
     if let Some(model_prefix) = prefix.strip_prefix("/model ") {
         return Some((
             7,
@@ -1649,6 +1723,20 @@ fn open_file_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
     None
 }
 
+fn natural_show_file_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
+    if let Some(path_prefix) = strip_ascii_prefix(prefix, "show file ") {
+        return Some((prefix.len() - path_prefix.len(), path_prefix));
+    }
+
+    let path_prefix = strip_ascii_prefix(prefix, "show ")?;
+    let (token_start, _) = last_shell_token(path_prefix);
+    if token_start != 0 {
+        return None;
+    }
+
+    Some((prefix.len() - path_prefix.len(), path_prefix))
+}
+
 fn open_file_completion_candidates(token: &str, workspace: &Path) -> Vec<String> {
     let (quoted, token) = match token.chars().next() {
         Some(quote @ '"') | Some(quote @ '\'') => (Some(quote), &token[quote.len_utf8()..]),
@@ -1769,7 +1857,7 @@ enum LocalCommand<'a> {
     Reload,
     ListModels,
     ListFiles,
-    ShowFile(&'a str),
+    ShowFile(Cow<'a, str>),
     Tools,
     ModelInfo,
     SetModel(&'a str),
@@ -1833,6 +1921,9 @@ fn handle_command(
             Ok(CommandOutcome::Quiet)
         }
         LocalCommand::ConnectTo(endpoint) => {
+            if endpoint.is_empty() {
+                return Ok(CommandOutcome::Output(connect_usage_message().to_string()));
+            }
             *current_endpoint = Some(endpoint.to_string());
             Ok(CommandOutcome::Quiet)
         }
@@ -1851,17 +1942,22 @@ fn handle_command(
             Ok(CommandOutcome::Quiet)
         }
         LocalCommand::ListModels => Ok(CommandOutcome::Output(format_models(llms))),
-        LocalCommand::ListFiles => Ok(CommandOutcome::Output(list_workspace_files_tree(
-            workspace,
-        )?)),
-        LocalCommand::ShowFile(args) => {
-            Ok(CommandOutcome::Output(show_file_output(workspace, args)?))
-        }
+        LocalCommand::ListFiles => match list_workspace_files_tree(workspace) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::ShowFile(args) => match show_file_output(workspace, args.as_ref()) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
         LocalCommand::Tools => Ok(CommandOutcome::Output(format_tools(tools))),
         LocalCommand::ModelInfo => Ok(CommandOutcome::Output(
             "Use /list_models to see configured profiles".to_string(),
         )),
         LocalCommand::SetModel(name) => {
+            if name.is_empty() {
+                return Ok(CommandOutcome::Output(model_usage_message().to_string()));
+            }
             if !llms.contains_key(name) {
                 return Ok(CommandOutcome::Output(format!(
                     "Unknown model profile '{name}'. Available: {}",
@@ -1875,11 +1971,21 @@ fn handle_command(
             session.set_system_prompt(system_prompt(profile));
             Ok(CommandOutcome::Quiet)
         }
-        LocalCommand::Diff => Ok(CommandOutcome::Output(git_workspace_diff(workspace)?)),
-        LocalCommand::OpenFile(path) => match open_in_editor(workspace, path) {
-            Ok(()) => Ok(CommandOutcome::Output(format!("Opened {}", path))),
-            Err(err) => Ok(CommandOutcome::Output(format!("Error: {err:#}"))),
+        LocalCommand::Diff => match git_workspace_diff(workspace) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
         },
+        LocalCommand::OpenFile(path) => {
+            if path.is_empty() {
+                return Ok(CommandOutcome::Output(
+                    open_file_usage_message().to_string(),
+                ));
+            }
+            match open_in_editor(workspace, path) {
+                Ok(()) => Ok(CommandOutcome::Output(format!("Opened {}", path))),
+                Err(err) => Ok(CommandOutcome::Output(format!("Error: {err:#}"))),
+            }
+        }
         LocalCommand::Clear => {
             let prompt = system_prompt(
                 llms.get(active_model)
@@ -1909,7 +2015,8 @@ fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/reload" => Some(LocalCommand::Reload),
         "/list_models" => Some(LocalCommand::ListModels),
         "/list_files" => Some(LocalCommand::ListFiles),
-        "/show_file" => Some(LocalCommand::ShowFile("")),
+        "/show_file" => Some(LocalCommand::ShowFile(Cow::Borrowed(""))),
+        "/open_file" => Some(LocalCommand::OpenFile("")),
         "/tools" => Some(LocalCommand::Tools),
         "/model" => Some(LocalCommand::ModelInfo),
         "/diff" => Some(LocalCommand::Diff),
@@ -1923,7 +2030,12 @@ fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
                 return Some(LocalCommand::SetModel(name.trim()));
             }
             if let Some(args) = input.strip_prefix("/show_file ") {
-                return Some(LocalCommand::ShowFile(args.trim()));
+                return Some(LocalCommand::ShowFile(Cow::Borrowed(args.trim())));
+            }
+            if let Some(args) = input.strip_prefix("/open_file ")
+                && args.trim().is_empty()
+            {
+                return Some(LocalCommand::OpenFile(""));
             }
             parse_open_file_target(input, "/open_file ").map(LocalCommand::OpenFile)
         }
@@ -2014,6 +2126,9 @@ fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
             return Some(LocalCommand::OpenFile(path));
         }
     }
+    if let Some(args) = parse_show_file_natural_language_args(input) {
+        return Some(LocalCommand::ShowFile(args));
+    }
     if matches_ci(
         input,
         &["clear", "clear conversation", "reset conversation"],
@@ -2033,6 +2148,120 @@ fn parse_open_file_target<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
         return None;
     }
     Some(strip_matching_quotes(path))
+}
+
+fn parse_show_file_natural_language_args(input: &str) -> Option<Cow<'_, str>> {
+    parse_show_file_natural_language_args_with_prefix(input, "show file ", false)
+        .or_else(|| parse_show_file_natural_language_args_with_prefix(input, "show ", true))
+}
+
+fn parse_show_file_natural_language_args_with_prefix<'a>(
+    input: &'a str,
+    prefix: &str,
+    single_token_only: bool,
+) -> Option<Cow<'a, str>> {
+    let raw = strip_ascii_prefix(input, prefix)?.trim();
+    let (path, options) = parse_show_file_natural_language_target(raw, single_token_only)?;
+    if !options.show_hash && !options.show_author {
+        return Some(Cow::Borrowed(path));
+    }
+
+    let mut args = String::new();
+    if options.show_hash {
+        args.push_str("--hash ");
+    }
+    if options.show_author {
+        args.push_str("--author ");
+    }
+    args.push_str(&quote_shell_argument(path));
+    Some(Cow::Owned(args))
+}
+
+fn parse_show_file_natural_language_target(
+    raw: &str,
+    single_token_only: bool,
+) -> Option<(&str, ShowFileOptions)> {
+    for (suffix, options) in [
+        (
+            " with hash and author",
+            ShowFileOptions {
+                show_hash: true,
+                show_author: true,
+            },
+        ),
+        (
+            " with author and hash",
+            ShowFileOptions {
+                show_hash: true,
+                show_author: true,
+            },
+        ),
+        (
+            " with hash",
+            ShowFileOptions {
+                show_hash: true,
+                show_author: false,
+            },
+        ),
+        (
+            " with author",
+            ShowFileOptions {
+                show_hash: false,
+                show_author: true,
+            },
+        ),
+    ] {
+        if let Some(path) = strip_ascii_suffix(raw, suffix) {
+            let path = parse_show_file_target(path.trim(), single_token_only)?;
+            return Some((path, options));
+        }
+    }
+
+    parse_show_file_target(raw, single_token_only).map(|path| (path, ShowFileOptions::default()))
+}
+
+fn parse_show_file_target(path: &str, single_token_only: bool) -> Option<&str> {
+    if path.is_empty() {
+        return None;
+    }
+    let quoted = matches!(path.chars().next(), Some('"') | Some('\''));
+    if single_token_only && !quoted && path.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(strip_matching_quotes(path))
+}
+
+fn strip_ascii_suffix<'a>(input: &'a str, suffix: &str) -> Option<&'a str> {
+    if input.len() >= suffix.len()
+        && input[input.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+    {
+        Some(&input[..input.len() - suffix.len()])
+    } else {
+        None
+    }
+}
+
+fn quote_shell_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && !argument
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '\\'))
+    {
+        return argument.to_string();
+    }
+
+    let mut quoted = String::from("\"");
+    for ch in argument.chars() {
+        match ch {
+            '"' | '\\' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn strip_ascii_prefix<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
@@ -3059,6 +3288,57 @@ mod tests {
     }
 
     #[test]
+    fn missing_required_command_arguments_return_usage_output() {
+        let llms = HashMap::from([(
+            "llama".to_string(),
+            test_profile("llama.cpp", "http://localhost:8100/v1", "gemma"),
+        )]);
+        let workspace = tempdir().expect("workspace");
+        let tools = ToolExecutor::new(workspace.path());
+
+        for (input, expected) in [
+            (
+                "/show_file",
+                "Usage: /show_file [--hash] [--author] <path>. Use /help to see available commands.",
+            ),
+            (
+                "/show_file --hash",
+                "Usage: /show_file [--hash] [--author] <path>. Use /help to see available commands.",
+            ),
+            (
+                "/open_file",
+                "Usage: /open_file <path>. Use /help to see available commands.",
+            ),
+        ] {
+            let mut active_model = "llama".to_string();
+            let mut current_endpoint = Some(normalized_openai_endpoint("http://localhost:8100/v1"));
+            let mut session = ChatSession::new("system");
+
+            let outcome = handle_command(
+                input,
+                CommandState {
+                    active_model: &mut active_model,
+                    current_endpoint: &mut current_endpoint,
+                    session: &mut session,
+                },
+                CommandContext {
+                    startup_model: "llama",
+                    startup_endpoint: "http://localhost:8100/v1",
+                    llms: &llms,
+                    tools: &tools,
+                    workspace: workspace.path(),
+                },
+            )
+            .expect("handle command");
+
+            assert!(
+                matches!(outcome, CommandOutcome::Output(message) if message == expected),
+                "unexpected outcome for {input:?}"
+            );
+        }
+    }
+
+    #[test]
     fn list_files_outputs_filtered_workspace_tree() {
         let llms = HashMap::from([(
             "llama".to_string(),
@@ -3127,9 +3407,37 @@ mod tests {
     }
 
     #[test]
+    fn parses_show_file_natural_language_commands() {
+        match parse_local_command("show README.md") {
+            Some(LocalCommand::ShowFile(path)) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected natural language show file command"),
+        }
+        match parse_local_command("show file \"docs/user guide.md\"") {
+            Some(LocalCommand::ShowFile(path)) => assert_eq!(path.as_ref(), "docs/user guide.md"),
+            _ => panic!("expected quoted natural language show file command"),
+        }
+        match parse_local_command("show src/tui.rs with hash") {
+            Some(LocalCommand::ShowFile(args)) => assert_eq!(args.as_ref(), "--hash src/tui.rs"),
+            _ => panic!("expected natural language show file hash command"),
+        }
+        match parse_local_command("show src/tui.rs with author") {
+            Some(LocalCommand::ShowFile(args)) => {
+                assert_eq!(args.as_ref(), "--author src/tui.rs")
+            }
+            _ => panic!("expected natural language show file author command"),
+        }
+        match parse_local_command("show file \"docs/user guide.md\" with hash and author") {
+            Some(LocalCommand::ShowFile(args)) => {
+                assert_eq!(args.as_ref(), "--hash --author \"docs/user guide.md\"")
+            }
+            _ => panic!("expected natural language show file metadata command"),
+        }
+    }
+
+    #[test]
     fn parses_show_file_commands() {
         match parse_local_command("/show_file README.md") {
-            Some(LocalCommand::ShowFile(args)) => assert_eq!(args, "README.md"),
+            Some(LocalCommand::ShowFile(args)) => assert_eq!(args.as_ref(), "README.md"),
             _ => panic!("expected show file slash command"),
         }
 
@@ -3532,6 +3840,25 @@ mod tests {
             completion_candidates("/open_file t", "/open_file t".len(), workspace.path(), &[])
                 .expect("target completion");
         assert_eq!(target_candidates, vec!["src/tui.rs".to_string()]);
+
+        let (start, _, show_candidates) =
+            completion_candidates("Show t", "Show t".len(), workspace.path(), &[])
+                .expect("show completion");
+        assert_eq!(start, "Show ".len());
+        assert_eq!(show_candidates, vec!["src/tui.rs".to_string()]);
+
+        let (start, _, show_file_candidates) = completion_candidates(
+            "show file READ",
+            "show file READ".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("show file completion");
+        assert_eq!(start, "show file ".len());
+        assert_eq!(
+            show_file_candidates,
+            vec!["README.md".to_string(), "doc/README.md".to_string()]
+        );
     }
 
     #[test]
@@ -3631,6 +3958,7 @@ mod tests {
 
     #[test]
     fn show_file_outputs_line_numbers_and_syntax_highlighting() {
+        let _env_lock = lock_process_env();
         let workspace = tempdir().expect("workspace");
         fs::write(
             workspace.path().join("main.rs"),
@@ -3638,6 +3966,7 @@ mod tests {
         )
         .expect("source file");
 
+        let _path_guard = EnvVarGuard::set_value("PATH", "");
         let output = show_file_output(workspace.path(), "main.rs").expect("show file");
         assert!(output.contains("1 "));
         assert!(output.contains("2 "));
@@ -3671,6 +4000,7 @@ mod tests {
 
     #[test]
     fn show_file_can_include_git_hash_and_author() {
+        let _env_lock = lock_process_env();
         let workspace = tempdir().expect("workspace");
         init_test_git_repo(workspace.path());
         fs::write(workspace.path().join("README.md"), "alpha\nbeta\n").expect("write file");
@@ -3707,6 +4037,85 @@ mod tests {
         assert!(output.contains("Orangu Tests"));
         assert!(output.contains("1 "));
         assert!(output.contains("2 "));
+    }
+
+    #[test]
+    fn show_file_uses_bat_when_available_without_metadata_columns() {
+        let _env_lock = lock_process_env();
+        let workspace = tempdir().expect("workspace");
+        fs::write(workspace.path().join("main.rs"), "fn main() {}\n").expect("source file");
+
+        let tools_dir = tempdir().expect("tools dir");
+        let bat = tools_dir.path().join("bat");
+        fs::write(&bat, "#!/bin/sh\nprintf 'BAT:%s\\n' \"$*\"\n").expect("bat script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&bat).expect("bat metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&bat, permissions).expect("bat permissions");
+        }
+        let path_value = format!(
+            "{}:{}",
+            tools_dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
+        let _columns_guard = EnvVarGuard::set_value("COLUMNS", "123");
+
+        let output = show_file_output(workspace.path(), "main.rs").expect("show file");
+        assert!(output.contains("BAT:"));
+        assert!(output.contains("--paging=never"));
+        assert!(output.contains("--color=always"));
+        assert!(output.contains("--style=numbers"));
+        assert!(output.contains("--terminal-width"));
+        assert!(output.contains(workspace.path().join("main.rs").to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn show_file_bypasses_bat_when_metadata_columns_are_requested() {
+        let _env_lock = lock_process_env();
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("README.md"), "alpha\nbeta\n").expect("write file");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+
+        let tools_dir = tempdir().expect("tools dir");
+        let bat = tools_dir.path().join("bat");
+        fs::write(&bat, "#!/bin/sh\nprintf 'BAT:%s\\n' \"$*\"\n").expect("bat script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&bat).expect("bat metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&bat, permissions).expect("bat permissions");
+        }
+        let path_value = format!(
+            "{}:{}",
+            tools_dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
+
+        let output = show_file_output(workspace.path(), "--hash README.md").expect("show file");
+        assert!(!output.contains("BAT:"));
+        assert!(output.contains("alpha"));
+        assert!(output.contains("beta"));
     }
 
     #[test]

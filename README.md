@@ -27,7 +27,7 @@
 - Persistent terminal UI with workspace, server, and model status in the header
 - Shell-style prompt editing, history, scrolling, and context-sensitive Tab completion
 - Local commands such as `/help`, `/list_models`, `/list_files`, `/show_file`, `/tools`, `/diff`, and `/open_file`
-- Natural-language local aliases such as `open README.md`, `list models`, `list files`, and `show help`
+- Natural-language local aliases such as `open README.md`, `show README.md`, `list models`, `list files`, and `show help`
 - Streaming responses with live footer status such as `Thinking (...)` and llama.cpp-native `Working @ X.Y t/s (...)`
 - Queued local commands while a response is in flight, plus double-`Esc` request cancellation
 - Markdown rendering in the console, including bold, italic, headings, lists, links, and code
