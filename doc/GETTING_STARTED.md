@@ -56,6 +56,7 @@ orangu --config ./orangu.conf
 - `/move_file old.rs new.rs`
 - `/cherry_pick <commit>`
 - `/commit <message>`
+- `/amend <message>`
 - `/push`
 - `/push --force`
 - `/init_repo`
@@ -87,6 +88,7 @@ remove README.md
 move old.rs new.rs
 cherry pick abc1234
 commit "[#42] My feature"
+amend "[#42] My feature"
 push
 force push
 init repo

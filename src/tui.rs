@@ -150,6 +150,7 @@ pub fn help_text() -> &'static str {
 /move_file <source> <destination>     Rename or move a tracked file with git mv
 /cherry_pick <commit>                 Cherry-pick a commit onto the current branch
 /commit <message>                     Commit all tracked changes with git commit -a -m
+/amend <message>                      Rewrite the last commit message with git commit --amend
 /push [--force]                       Push the current branch to origin
 /init_repo                            Initialize a Git repository in the workspace
 /squash                               Squash all branch commits into one
@@ -158,7 +159,7 @@ pub fn help_text() -> &'static str {
 /clear                                Clear the current conversation
 /quit                                 Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `push`, `force push`, `init repo`, `delete feature/foo`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `init repo`, `delete feature/foo`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion."#
 }
@@ -569,6 +570,7 @@ impl OranguHelper {
                 "/move_file".to_string(),
                 "/cherry_pick".to_string(),
                 "/commit".to_string(),
+                "/amend".to_string(),
                 "/push".to_string(),
                 "/init_repo".to_string(),
                 "/squash".to_string(),

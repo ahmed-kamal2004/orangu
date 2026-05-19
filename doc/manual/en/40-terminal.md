@@ -82,6 +82,7 @@ All slash commands are handled locally. They are not sent to the model.
 | `/move_file <source> <destination>` | Rename or move a tracked file with git mv |
 | `/cherry_pick <commit>` | Cherry-pick a commit onto the current branch |
 | `/commit <message>` | Commit all tracked changes with git commit -a -m |
+| `/amend <message>` | Rewrite the last commit message |
 | `/push [--force]` | Push the current branch to origin |
 | `/init_repo` | Initialize a Git repository in the workspace |
 | `/squash` | Squash all branch commits into one using the first commit message |
@@ -111,6 +112,7 @@ Free-form prompts are blocked when the server or model status in the header is r
 - `/move_file <source> <destination>` requires a Git repository and runs `git mv`; Tab completion for the first argument offers tracked directories first, then tracked files; Tab completion for the second argument offers workspace paths
 - `/cherry_pick <commit>` requires a Git repository and runs `git cherry-pick`; `gh` has no equivalent so it always uses plain Git; Tab completion offers abbreviated commit hashes from the default branch (`origin/main`, `origin/master`, `main`, or `master`)
 - `/commit <message>` requires a Git repository and runs `git commit -a -m <message>`; `gh` has no equivalent so it always uses plain Git; the message may be bare (`/commit Fix the bug`) or quoted (`/commit "[#42] My feature"`)
+- `/amend <message>` requires a Git repository and runs `git commit --amend -m <message>`; `gh` has no equivalent so it always uses plain Git; the message is mandatory and may be bare (`/amend Fix the bug`) or quoted (`/amend "[#42] My feature"`)
 - `/push [--force]` requires a Git repository and runs `git push origin <branch>` using the current branch name; `gh` has no equivalent so it always uses plain Git; `--force` (or `-f` or `force`) runs `git push -f origin <branch>` but is blocked on `main` and `master` to prevent accidental history rewrites
 - `/init_repo` runs `git init` in the workspace directory; works both inside and outside an existing Git repository (reinitializing an existing repo is safe); `gh` has no equivalent so it always uses plain Git
 - `/squash` requires a Git repository; squashes all commits on the current branch (relative to `origin/main`, `origin/master`, `main`, or `master`, tried in that order) into a single commit using the oldest commit's message; `gh` has no equivalent so it always uses plain Git; squashing on `main` or `master` is blocked; requires at least two commits on the branch
@@ -143,6 +145,7 @@ Local commands can also be entered in plain language. Examples:
 - `move old.rs new.rs` or `move file old.rs new.rs` or `git mv old.rs new.rs`
 - `cherry pick abc1234` or `cherry-pick abc1234` or `git cherry-pick abc1234`
 - `commit "[#42] My feature"` or `commit Fix the bug` or `git commit -m "Fix the bug"`
+- `amend "[#42] My feature"` or `amend Fix the bug` or `git amend "[#42] My feature"` or `git commit --amend -m "Fix the bug"`
 - `push` or `git push` or `git push origin`
 - `force push` or `push force` or `push --force`
 - `init` or `init repo` or `git init`

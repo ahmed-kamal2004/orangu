@@ -26,8 +26,8 @@
 - Workspace-aware local tools for reading, editing, listing, fetching, and shell commands
 - Persistent terminal UI with workspace, server, and model status in the header, refreshed every minute while idle
 - Shell-style prompt editing, history, scrolling, and context-sensitive Tab completion
-- Local commands such as `/help`, `/list_models`, `/list_files`, `/show_file`, `/tools`, `/diff`, `/status`, `/log`, `/pull`, `/rebase`, `/merge`, `/checkout`, `/add_file`, `/remove_file`, `/move_file`, `/cherry_pick`, `/commit`, `/push`, `/init_repo`, `/squash`, `/delete`, and `/open_file`
-- Natural-language local aliases such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `push`, `force push`, `init repo`, `squash`, `delete feature/foo`, and `show help`
+- Local commands such as `/help`, `/list_models`, `/list_files`, `/show_file`, `/tools`, `/diff`, `/status`, `/log`, `/pull`, `/rebase`, `/merge`, `/checkout`, `/add_file`, `/remove_file`, `/move_file`, `/cherry_pick`, `/commit`, `/amend`, `/push`, `/init_repo`, `/squash`, `/delete`, and `/open_file`
+- Natural-language local aliases such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `init repo`, `squash`, `delete feature/foo`, and `show help`
 - Streaming responses with live footer status such as `Thinking (...)` and llama.cpp-native `Working @ X.Y t/s (...)`
 - Queued local commands while a response is in flight, plus double-`Esc` request cancellation
 - Markdown rendering in the console, including bold, italic, headings, lists, links, and code
@@ -119,6 +119,8 @@ Useful first commands:
 /status
 /log
 /cherry_pick abc1234
+/commit "[#42] My feature"
+/amend "[#42] My feature"
 /squash
 /delete feature/foo
 /open_file README.md

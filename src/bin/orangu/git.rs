@@ -1068,6 +1068,46 @@ pub fn git_commit(repo_root: &Path, message: &str) -> Result<String> {
     })
 }
 
+pub fn amend_output(workspace: &Path, message: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("amend is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_amend(&repo_root, message)? {
+        return Ok(output);
+    }
+    git_amend(&repo_root, message)
+}
+
+pub fn try_gh_amend(_repo_root: &Path, _message: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+pub fn git_amend(repo_root: &Path, message: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["commit", "--amend", "-m", message])
+        .output()
+        .context("failed to run git commit --amend")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git commit --amend failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    Ok(String::new())
+}
+
 pub fn push_output(workspace: &Path, force: bool) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("push is only available inside a Git repository"))?;
@@ -1602,6 +1642,38 @@ mod tests {
             .parse()
             .unwrap_or(99);
         assert_eq!(count, 1, "expected 1 commit after squash, got {count}");
+    }
+
+    #[test]
+    fn amend_rewrites_last_commit_message() {
+        let _env_lock = process_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let workspace = tempdir().expect("workspace");
+        let home = tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set_path("HOME", home.path());
+        init_git_for_test(workspace.path());
+
+        std::fs::write(workspace.path().join("file.txt"), "content\n").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "Original message"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git commit");
+
+        let result = amend_output(workspace.path(), "[#42] Amended message");
+        assert!(result.is_ok(), "amend failed: {:?}", result);
+
+        let log = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%s"])
+            .current_dir(workspace.path())
+            .output()
+            .expect("git log");
+        let subject = String::from_utf8_lossy(&log.stdout).trim().to_string();
+        assert_eq!(subject, "[#42] Amended message");
     }
 
     #[test]

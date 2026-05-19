@@ -133,6 +133,7 @@ pub enum LocalCommand<'a> {
     MoveFile(Option<(Cow<'a, str>, Cow<'a, str>)>),
     CherryPick(Option<Cow<'a, str>>),
     Commit(Option<Cow<'a, str>>),
+    Amend(Option<Cow<'a, str>>),
     Push(bool),
     InitRepo,
     Squash,
@@ -189,6 +190,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/move_file" => Some(LocalCommand::MoveFile(None)),
         "/cherry_pick" => Some(LocalCommand::CherryPick(None)),
         "/commit" => Some(LocalCommand::Commit(None)),
+        "/amend" => Some(LocalCommand::Amend(None)),
         "/push" => Some(LocalCommand::Push(false)),
         "/init_repo" => Some(LocalCommand::InitRepo),
         "/squash" => Some(LocalCommand::Squash),
@@ -261,6 +263,14 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             if let Some(args) = input.strip_prefix("/commit ") {
                 let message = strip_matching_quotes(args.trim());
                 return Some(LocalCommand::Commit(if message.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(message))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/amend ") {
+                let message = strip_matching_quotes(args.trim());
+                return Some(LocalCommand::Amend(if message.is_empty() {
                     None
                 } else {
                     Some(Cow::Borrowed(message))
@@ -478,6 +488,23 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     }
     if matches_ci(input, &["commit"]) {
         return Some(LocalCommand::Commit(None));
+    }
+    for prefix in [
+        "git commit --amend -m ",
+        "git amend -m ",
+        "git amend ",
+        "amend message ",
+        "amend ",
+    ] {
+        if let Some(msg) = strip_ascii_prefix(input, prefix) {
+            let msg = strip_matching_quotes(msg.trim());
+            if !msg.is_empty() {
+                return Some(LocalCommand::Amend(Some(Cow::Borrowed(msg))));
+            }
+        }
+    }
+    if matches_ci(input, &["amend", "git amend", "git commit --amend"]) {
+        return Some(LocalCommand::Amend(None));
     }
     if matches_ci(
         input,
@@ -762,6 +789,10 @@ pub fn cherry_pick_usage_message() -> &'static str {
 
 pub fn commit_usage_message() -> &'static str {
     "Usage: /commit <message>. Use /help to see available commands."
+}
+
+pub fn amend_usage_message() -> &'static str {
+    "Usage: /amend <message>. Use /help to see available commands."
 }
 
 pub fn delete_branch_usage_message() -> &'static str {
@@ -1351,6 +1382,62 @@ mod tests {
                 assert_eq!(msg.as_ref(), "fixed");
             }
             _ => panic!("expected git commit -m form"),
+        }
+    }
+
+    #[test]
+    fn parses_amend_commands() {
+        assert!(matches!(
+            parse_local_command("/amend"),
+            Some(LocalCommand::Amend(None))
+        ));
+        assert!(matches!(
+            parse_local_command("amend"),
+            Some(LocalCommand::Amend(None))
+        ));
+        assert!(matches!(
+            parse_local_command("git amend"),
+            Some(LocalCommand::Amend(None))
+        ));
+        assert!(matches!(
+            parse_local_command("git commit --amend"),
+            Some(LocalCommand::Amend(None))
+        ));
+        match parse_local_command("/amend [#42] My feature") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected amend with plain message"),
+        }
+        match parse_local_command("/amend \"[#42] My feature\"") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected amend with double-quoted message"),
+        }
+        match parse_local_command("amend \"[#42] My feature\"") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected natural amend with quoted message"),
+        }
+        match parse_local_command("amend message \"[#42] My feature\"") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected amend message form"),
+        }
+        match parse_local_command("git commit --amend -m \"[#42] My feature\"") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected git commit --amend -m form"),
+        }
+        match parse_local_command("git amend \"[#42] My feature\"") {
+            Some(LocalCommand::Amend(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected git amend form"),
         }
     }
 

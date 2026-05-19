@@ -69,6 +69,7 @@ Then start with:
 /move_file old.rs new.rs
 /cherry_pick abc1234
 /commit "[#42] My feature"
+/amend "[#42] My feature"
 /push
 /push --force
 /init_repo
