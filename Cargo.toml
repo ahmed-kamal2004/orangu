@@ -8,7 +8,7 @@ authors = ["Jesper Pedersen <jesperpedersen.db@gmail.com>"]
 
 [[bin]]
 name = "orangu"
-path = "src/bin/orangu.rs"
+path = "src/bin/orangu/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
