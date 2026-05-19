@@ -78,6 +78,7 @@ const ANSI_STRIKETHROUGH_ON: &str = "\x1b[9m";
 const ANSI_STRIKETHROUGH_OFF: &str = "\x1b[29m";
 const ANSI_FG_CODE: &str = "\x1b[38;2;255;215;120m";
 const ANSI_FG_LINK: &str = "\x1b[38;2;102;178;255m";
+const ANSI_FG_LIGHT_GREEN: &str = "\x1b[38;2;170;255;170m";
 const ANSI_FG_LIGHT_RED: &str = "\x1b[38;2;255;170;170m";
 const ANSI_FG_SUBTLE: &str = "\x1b[38;2;180;190;205m";
 const ANSI_FG_RESET: &str = "\x1b[39m";
@@ -98,6 +99,20 @@ const COMMANDS: &[&str] = &[
     "/tools",
     "/model",
     "/diff",
+    "/status",
+    "/log",
+    "/pull",
+    "/rebase",
+    "/merge",
+    "/checkout",
+    "/add_file",
+    "/remove_file",
+    "/move_file",
+    "/cherry_pick",
+    "/commit",
+    "/push",
+    "/init_repo",
+    "/delete",
     "/open_file",
     "/clear",
     "/quit",
@@ -633,6 +648,38 @@ fn model_usage_message() -> &'static str {
 
 fn connect_usage_message() -> &'static str {
     "Usage: /connect <endpoint>. Use /help to see available commands."
+}
+
+fn pull_usage_message() -> &'static str {
+    "Usage: /pull <number>. Use /help to see available commands."
+}
+
+fn merge_usage_message() -> &'static str {
+    "Usage: /merge <branch>. Use /help to see available commands."
+}
+
+fn checkout_usage_message() -> &'static str {
+    "Usage: /checkout <branch|file>. Use /help to see available commands."
+}
+
+fn add_file_usage_message() -> &'static str {
+    "Usage: /add_file <path>. Use /help to see available commands."
+}
+
+fn remove_file_usage_message() -> &'static str {
+    "Usage: /remove_file <path>. Use /help to see available commands."
+}
+
+fn move_file_usage_message() -> &'static str {
+    "Usage: /move_file <source> <destination>. Use /help to see available commands."
+}
+
+fn cherry_pick_usage_message() -> &'static str {
+    "Usage: /cherry_pick <commit>. Use /help to see available commands."
+}
+
+fn commit_usage_message() -> &'static str {
+    "Usage: /commit <message>. Use /help to see available commands."
 }
 
 #[derive(Debug)]
@@ -1691,6 +1738,46 @@ fn completion_candidates(
         ));
     }
 
+    if let Some((start, candidates)) = checkout_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = add_file_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = remove_file_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = move_file_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = cherry_pick_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, branch_prefix)) = merge_completion_prefix(prefix) {
+        let branches = discover_git_root(workspace)
+            .map(|root| git_branch_names(&root))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| b.starts_with(branch_prefix))
+            .collect();
+        return Some((start, cursor, branches));
+    }
+
+    if let Some((start, branch_prefix)) = delete_branch_completion_prefix(prefix) {
+        let branches = discover_git_root(workspace)
+            .map(|root| git_local_branch_names(&root))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| !is_protected_branch(b) && b.starts_with(branch_prefix))
+            .collect();
+        return Some((start, cursor, branches));
+    }
+
     if prefix.starts_with('/') {
         return Some((
             0,
@@ -1858,6 +1945,332 @@ fn natural_show_file_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
     }
 
     Some((prefix.len() - path_prefix.len(), path_prefix))
+}
+
+fn checkout_completion_candidates(prefix: &str, workspace: &Path) -> Option<(usize, Vec<String>)> {
+    let (start, token, switch_form) = if let Some(rest) = prefix.strip_prefix("/checkout ") {
+        ("/checkout ".len(), rest, false)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git checkout ") {
+        (prefix.len() - rest.len(), rest, false)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "checkout ") {
+        (prefix.len() - rest.len(), rest, false)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "switch to ") {
+        (prefix.len() - rest.len(), rest, true)
+    } else {
+        return None;
+    };
+
+    let mut candidates: Vec<String> = discover_git_root(workspace)
+        .map(|root| {
+            let mut refs = git_branch_names(&root);
+            if switch_form {
+                refs.extend(git_tag_names(&root));
+                refs.sort();
+                refs.dedup();
+            }
+            refs
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.starts_with(token))
+        .collect();
+
+    if !switch_form {
+        for file in file_completion_candidates(token, workspace) {
+            if !candidates.contains(&file) {
+                candidates.push(file);
+            }
+        }
+    }
+
+    Some((start, candidates))
+}
+
+fn add_file_completion_candidates(prefix: &str, workspace: &Path) -> Option<(usize, Vec<String>)> {
+    let (start, token) = if let Some(rest) = prefix.strip_prefix("/add_file ") {
+        ("/add_file ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git add ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "add file ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "add ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_untracked_candidates(&root, token))
+        .unwrap_or_default();
+
+    Some((start, candidates))
+}
+
+fn git_untracked_candidates(repo_root: &Path, token: &str) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["ls-files", "--others", "--exclude-standard", "--directory"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.is_empty() || !line.starts_with(token) {
+            continue;
+        }
+        if line.ends_with('/') {
+            dirs.push(line.to_string());
+        } else {
+            files.push(line.to_string());
+        }
+    }
+    dirs.sort();
+    files.sort();
+    dirs.extend(files);
+    dirs
+}
+
+fn remove_file_completion_candidates(
+    prefix: &str,
+    workspace: &Path,
+) -> Option<(usize, Vec<String>)> {
+    let (start, token) = if let Some(rest) = prefix.strip_prefix("/remove_file ") {
+        ("/remove_file ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git rm ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "remove file ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "remove ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_tracked_candidates(&root, token))
+        .unwrap_or_default();
+
+    Some((start, candidates))
+}
+
+fn git_tracked_candidates(repo_root: &Path, token: &str) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["ls-files"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut dirs = std::collections::BTreeSet::new();
+    let mut files = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if line.is_empty() || !line.starts_with(token) {
+            continue;
+        }
+        let rest = &line[token.len()..];
+        if let Some(slash) = rest.find('/') {
+            dirs.insert(format!("{}{}/", token, &rest[..slash]));
+        } else {
+            files.push(line.to_string());
+        }
+    }
+    let mut result: Vec<String> = dirs.into_iter().collect();
+    files.sort();
+    result.extend(files);
+    result
+}
+
+fn move_file_completion_candidates(prefix: &str, workspace: &Path) -> Option<(usize, Vec<String>)> {
+    let (cmd_len, args) = if let Some(rest) = prefix.strip_prefix("/move_file ") {
+        ("/move_file ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git mv ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "move file ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "move ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+
+    let (token_start, token) = last_shell_token(args);
+    let previous = args[..token_start].trim_end();
+    let previous_count = if previous.is_empty() {
+        0
+    } else {
+        shell_words(previous).unwrap_or_default().len()
+    };
+
+    let absolute_start = cmd_len + token_start;
+    let candidates = if previous_count == 0 {
+        discover_git_root(workspace)
+            .map(|root| git_tracked_candidates(&root, token))
+            .unwrap_or_default()
+    } else {
+        file_completion_candidates(token, workspace)
+    };
+
+    Some((absolute_start, candidates))
+}
+
+fn merge_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
+    if let Some(branch) = prefix.strip_prefix("/merge ") {
+        return Some(("/merge ".len(), branch));
+    }
+    for command_prefix in ["git merge ", "merge "] {
+        if let Some(branch) = strip_ascii_prefix(prefix, command_prefix) {
+            return Some((prefix.len() - branch.len(), branch));
+        }
+    }
+    None
+}
+
+fn delete_branch_completion_prefix(prefix: &str) -> Option<(usize, &str)> {
+    if let Some(branch) = prefix.strip_prefix("/delete ") {
+        return Some(("/delete ".len(), branch));
+    }
+    for command_prefix in ["git branch -D ", "delete branch ", "delete "] {
+        if let Some(branch) = strip_ascii_prefix(prefix, command_prefix) {
+            return Some((prefix.len() - branch.len(), branch));
+        }
+    }
+    None
+}
+
+fn git_branch_names(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["branch", "--all", "--format=%(refname:short)"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && *l != "HEAD" && !l.ends_with("/HEAD"))
+        .map(str::to_string)
+        .collect();
+    branches.sort();
+    branches.dedup();
+    branches
+}
+
+fn git_tag_names(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["tag"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut tags: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn git_local_branch_names(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["branch", "--format=%(refname:short)"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut branches: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    branches.sort();
+    branches.dedup();
+    branches
+}
+
+fn cherry_pick_completion_candidates(
+    prefix: &str,
+    workspace: &Path,
+) -> Option<(usize, Vec<String>)> {
+    let (cmd_len, token) = if let Some(rest) = prefix.strip_prefix("/cherry_pick ") {
+        ("/cherry_pick ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git cherry-pick ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "cherry-pick ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "cherry pick ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+    let token = token.trim_start();
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_commit_hashes(&root, token))
+        .unwrap_or_default();
+    Some((cmd_len, candidates))
+}
+
+fn git_commit_hashes(repo_root: &Path, token: &str) -> Vec<String> {
+    for branch in ["origin/main", "origin/master", "main", "master"] {
+        let check = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["rev-parse", "--verify", branch])
+            .output();
+        if !matches!(check, Ok(ref o) if o.status.success()) {
+            continue;
+        }
+        let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["log", "--abbrev-commit", "--format=%h", branch])
+            .output()
+        else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let hashes: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|h| !h.is_empty() && h.starts_with(token))
+            .take(50)
+            .map(str::to_string)
+            .collect();
+        if !hashes.is_empty() || token.is_empty() {
+            return hashes;
+        }
+    }
+    Vec::new()
 }
 
 fn open_file_completion_candidates(token: &str, workspace: &Path) -> Vec<String> {
@@ -2034,6 +2447,20 @@ enum LocalCommand<'a> {
     ModelInfo,
     SetModel(&'a str),
     Diff,
+    Status,
+    Log,
+    Pull(Option<u64>),
+    Rebase,
+    Merge(Option<Cow<'a, str>>),
+    Checkout(Option<Cow<'a, str>>),
+    AddFile(Option<Cow<'a, str>>),
+    RemoveFile(Option<Cow<'a, str>>),
+    MoveFile(Option<(Cow<'a, str>, Cow<'a, str>)>),
+    CherryPick(Option<Cow<'a, str>>),
+    Commit(Option<Cow<'a, str>>),
+    Push(bool),
+    InitRepo,
+    DeleteBranch(Option<Cow<'a, str>>),
     OpenFile(&'a str),
     Clear,
     Quit,
@@ -2147,6 +2574,87 @@ fn handle_command(
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },
+        LocalCommand::Status => match status_output(workspace) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Log => match log_output(workspace) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Pull(None) => Ok(CommandOutcome::Output(pull_usage_message().to_string())),
+        LocalCommand::Pull(Some(pr_number)) => match pull_request_output(workspace, pr_number) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Rebase => match rebase_output(workspace) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Merge(None) => Ok(CommandOutcome::Output(merge_usage_message().to_string())),
+        LocalCommand::Merge(Some(branch)) => match merge_output(workspace, &branch) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Checkout(None) => {
+            Ok(CommandOutcome::Output(checkout_usage_message().to_string()))
+        }
+        LocalCommand::Checkout(Some(target)) => match checkout_output(workspace, &target) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::AddFile(None) => {
+            Ok(CommandOutcome::Output(add_file_usage_message().to_string()))
+        }
+        LocalCommand::AddFile(Some(path)) => match add_file_output(workspace, &path) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::RemoveFile(None) => Ok(CommandOutcome::Output(
+            remove_file_usage_message().to_string(),
+        )),
+        LocalCommand::RemoveFile(Some(path)) => match remove_file_output(workspace, &path) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::MoveFile(None) => Ok(CommandOutcome::Output(
+            move_file_usage_message().to_string(),
+        )),
+        LocalCommand::MoveFile(Some((src, dst))) => match move_file_output(workspace, &src, &dst) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::CherryPick(None) => Ok(CommandOutcome::Output(
+            cherry_pick_usage_message().to_string(),
+        )),
+        LocalCommand::CherryPick(Some(commit)) => match cherry_pick_output(workspace, &commit) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Commit(None) => {
+            Ok(CommandOutcome::Output(commit_usage_message().to_string()))
+        }
+        LocalCommand::Commit(Some(message)) => match commit_output(workspace, &message) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::Push(force) => match push_output(workspace, force) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::InitRepo => match init_repo_output(workspace) {
+            Ok(_) => Ok(CommandOutcome::Quiet),
+            Err(err) => Ok(local_command_error(err)),
+        },
+        LocalCommand::DeleteBranch(None) => Ok(CommandOutcome::Output(
+            delete_branch_usage_message().to_string(),
+        )),
+        LocalCommand::DeleteBranch(Some(branch)) => {
+            match delete_branch_output(workspace, &branch) {
+                Ok(_) => Ok(CommandOutcome::Quiet),
+                Err(err) => Ok(local_command_error(err)),
+            }
+        }
         LocalCommand::OpenFile(path) => {
             if path.is_empty() {
                 return Ok(CommandOutcome::Output(
@@ -2154,7 +2662,7 @@ fn handle_command(
                 ));
             }
             match open_in_editor(workspace, path) {
-                Ok(()) => Ok(CommandOutcome::Output(format!("Opened {}", path))),
+                Ok(()) => Ok(CommandOutcome::Quiet),
                 Err(err) => Ok(CommandOutcome::Output(format!("Error: {err:#}"))),
             }
         }
@@ -2192,6 +2700,20 @@ fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/tools" => Some(LocalCommand::Tools),
         "/model" => Some(LocalCommand::ModelInfo),
         "/diff" => Some(LocalCommand::Diff),
+        "/status" => Some(LocalCommand::Status),
+        "/log" => Some(LocalCommand::Log),
+        "/pull" => Some(LocalCommand::Pull(None)),
+        "/rebase" => Some(LocalCommand::Rebase),
+        "/merge" => Some(LocalCommand::Merge(None)),
+        "/checkout" => Some(LocalCommand::Checkout(None)),
+        "/add_file" => Some(LocalCommand::AddFile(None)),
+        "/remove_file" => Some(LocalCommand::RemoveFile(None)),
+        "/move_file" => Some(LocalCommand::MoveFile(None)),
+        "/cherry_pick" => Some(LocalCommand::CherryPick(None)),
+        "/commit" => Some(LocalCommand::Commit(None)),
+        "/push" => Some(LocalCommand::Push(false)),
+        "/init_repo" => Some(LocalCommand::InitRepo),
+        "/delete" => Some(LocalCommand::DeleteBranch(None)),
         "/clear" => Some(LocalCommand::Clear),
         "/quit" => Some(LocalCommand::Quit),
         _ => {
@@ -2203,6 +2725,81 @@ fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/show_file ") {
                 return Some(LocalCommand::ShowFile(Cow::Borrowed(args.trim())));
+            }
+            if let Some(args) = input.strip_prefix("/pull ") {
+                return Some(LocalCommand::Pull(args.trim().parse::<u64>().ok()));
+            }
+            if let Some(args) = input.strip_prefix("/merge ") {
+                let branch = args.trim();
+                return Some(LocalCommand::Merge(if branch.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(branch))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/checkout ") {
+                let target = args.trim();
+                return Some(LocalCommand::Checkout(if target.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(target))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/add_file ") {
+                let path = args.trim();
+                return Some(LocalCommand::AddFile(if path.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(path))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/remove_file ") {
+                let path = args.trim();
+                return Some(LocalCommand::RemoveFile(if path.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(path))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/move_file ") {
+                let args = args.trim();
+                return Some(match shell_words(args) {
+                    Ok(words) if words.len() >= 2 => LocalCommand::MoveFile(Some((
+                        Cow::Owned(words[0].clone()),
+                        Cow::Owned(words[1].clone()),
+                    ))),
+                    _ => LocalCommand::MoveFile(None),
+                });
+            }
+            if let Some(args) = input.strip_prefix("/cherry_pick ") {
+                let commit = args.trim();
+                return Some(LocalCommand::CherryPick(if commit.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(commit))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/commit ") {
+                let message = strip_matching_quotes(args.trim());
+                return Some(LocalCommand::Commit(if message.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(message))
+                }));
+            }
+            if let Some(flag) = input.strip_prefix("/push ") {
+                let flag = flag.trim();
+                if flag == "--force" || flag == "-f" || flag.eq_ignore_ascii_case("force") {
+                    return Some(LocalCommand::Push(true));
+                }
+            }
+            if let Some(args) = input.strip_prefix("/delete ") {
+                let branch = args.trim();
+                return Some(LocalCommand::DeleteBranch(if branch.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(branch))
+                }));
             }
             if let Some(args) = input.strip_prefix("/open_file ")
                 && args.trim().is_empty()
@@ -2280,6 +2877,12 @@ fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     if matches_ci(input, &["diff", "show diff", "git diff"]) {
         return Some(LocalCommand::Diff);
     }
+    if matches_ci(input, &["status", "show status", "git status"]) {
+        return Some(LocalCommand::Status);
+    }
+    if matches_ci(input, &["log", "show log", "git log", "git lg"]) {
+        return Some(LocalCommand::Log);
+    }
     for prefix in [
         "use model ",
         "switch model to ",
@@ -2300,6 +2903,134 @@ fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     }
     if let Some(args) = parse_show_file_natural_language_args(input) {
         return Some(LocalCommand::ShowFile(args));
+    }
+    if let Some(pr_number) = parse_pull_pr_number(input) {
+        return Some(LocalCommand::Pull(Some(pr_number)));
+    }
+    if matches_ci(input, &["rebase", "git rebase"]) {
+        return Some(LocalCommand::Rebase);
+    }
+    for prefix in ["git merge ", "merge "] {
+        if let Some(branch) = strip_ascii_prefix(input, prefix) {
+            let branch = branch.trim();
+            if !branch.is_empty() {
+                return Some(LocalCommand::Merge(Some(Cow::Borrowed(branch))));
+            }
+        }
+    }
+    if matches_ci(input, &["merge"]) {
+        return Some(LocalCommand::Merge(None));
+    }
+    for prefix in ["git checkout ", "checkout "] {
+        if let Some(target) = strip_ascii_prefix(input, prefix) {
+            let target = target.trim();
+            if !target.is_empty() {
+                return Some(LocalCommand::Checkout(Some(Cow::Borrowed(target))));
+            }
+        }
+    }
+    if let Some(target) = strip_ascii_prefix(input, "switch to ") {
+        let target = strip_ascii_suffix(target.trim(), " branch")
+            .map(str::trim)
+            .unwrap_or(target.trim());
+        if !target.is_empty() {
+            return Some(LocalCommand::Checkout(Some(Cow::Borrowed(target))));
+        }
+    }
+    if matches_ci(input, &["checkout", "switch to"]) {
+        return Some(LocalCommand::Checkout(None));
+    }
+    for prefix in ["git add ", "add file ", "add "] {
+        if let Some(path) = strip_ascii_prefix(input, prefix) {
+            let path = path.trim();
+            if !path.is_empty() {
+                return Some(LocalCommand::AddFile(Some(Cow::Borrowed(path))));
+            }
+        }
+    }
+    if matches_ci(input, &["add"]) {
+        return Some(LocalCommand::AddFile(None));
+    }
+    for prefix in ["git rm ", "remove file ", "remove "] {
+        if let Some(path) = strip_ascii_prefix(input, prefix) {
+            let path = path.trim();
+            if !path.is_empty() {
+                return Some(LocalCommand::RemoveFile(Some(Cow::Borrowed(path))));
+            }
+        }
+    }
+    if matches_ci(input, &["remove"]) {
+        return Some(LocalCommand::RemoveFile(None));
+    }
+    for prefix in ["git mv ", "move file ", "move "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            let rest = rest.trim();
+            if let Ok(words) = shell_words(rest)
+                && words.len() >= 2
+            {
+                return Some(LocalCommand::MoveFile(Some((
+                    Cow::Owned(words[0].clone()),
+                    Cow::Owned(words[1].clone()),
+                ))));
+            }
+        }
+    }
+    if matches_ci(input, &["move"]) {
+        return Some(LocalCommand::MoveFile(None));
+    }
+    for prefix in ["git cherry-pick ", "cherry-pick ", "cherry pick "] {
+        if let Some(commit) = strip_ascii_prefix(input, prefix) {
+            let commit = commit.trim();
+            if !commit.is_empty() {
+                return Some(LocalCommand::CherryPick(Some(Cow::Borrowed(commit))));
+            }
+        }
+    }
+    if matches_ci(input, &["cherry pick", "cherry-pick"]) {
+        return Some(LocalCommand::CherryPick(None));
+    }
+    for prefix in ["git commit -a -m ", "git commit -m ", "commit "] {
+        if let Some(msg) = strip_ascii_prefix(input, prefix) {
+            let msg = strip_matching_quotes(msg.trim());
+            if !msg.is_empty() {
+                return Some(LocalCommand::Commit(Some(Cow::Borrowed(msg))));
+            }
+        }
+    }
+    if matches_ci(input, &["commit"]) {
+        return Some(LocalCommand::Commit(None));
+    }
+    if matches_ci(
+        input,
+        &[
+            "force push",
+            "push force",
+            "push --force",
+            "push -f",
+            "git push --force",
+            "git push -f",
+            "git push origin --force",
+            "git push origin -f",
+        ],
+    ) {
+        return Some(LocalCommand::Push(true));
+    }
+    if matches_ci(input, &["push", "git push", "git push origin"]) {
+        return Some(LocalCommand::Push(false));
+    }
+    if matches_ci(input, &["init", "init repo", "git init"]) {
+        return Some(LocalCommand::InitRepo);
+    }
+    if matches_ci(input, &["delete", "delete branch"]) {
+        return Some(LocalCommand::DeleteBranch(None));
+    }
+    for prefix in ["git branch -D ", "delete branch ", "delete "] {
+        if let Some(branch) = strip_ascii_prefix(input, prefix) {
+            let branch = branch.trim();
+            if !branch.is_empty() {
+                return Some(LocalCommand::DeleteBranch(Some(Cow::Borrowed(branch))));
+            }
+        }
     }
     if matches_ci(
         input,
@@ -2595,6 +3326,135 @@ fn git_workspace_diff(workspace: &Path) -> Result<String> {
     }
 }
 
+fn status_output(workspace: &Path) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("status is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_status(&repo_root)? {
+        return Ok(output);
+    }
+    git_status(&repo_root)
+}
+
+fn try_gh_status(_repo_root: &Path) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_status(repo_root: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["status", "--branch", "--short"])
+        .output()
+        .context("failed to run git status")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git status failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let colored = colorize_git_status(&raw);
+    if colored.trim().is_empty() {
+        Ok("Nothing to commit, working tree clean.".to_string())
+    } else {
+        Ok(colored)
+    }
+}
+
+fn colorize_git_status(raw: &str) -> String {
+    let mut result = String::new();
+    for line in raw.lines() {
+        if line.starts_with("## ") {
+            result.push_str(ANSI_FG_SUBTLE);
+            result.push_str(line);
+            result.push_str(ANSI_FG_RESET);
+        } else if line.len() >= 2 {
+            let x = line.as_bytes()[0] as char;
+            let y = line.as_bytes()[1] as char;
+            let color = status_entry_color(x, y);
+            result.push_str(color);
+            result.push_str(line);
+            if !color.is_empty() {
+                result.push_str(ANSI_FG_RESET);
+            }
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    result.trim_end_matches('\n').to_string()
+}
+
+fn status_entry_color(x: char, y: char) -> &'static str {
+    if x == 'D' || y == 'D' {
+        return ANSI_FG_LIGHT_RED;
+    }
+    if x == 'A' || x == '?' {
+        return ANSI_FG_LIGHT_GREEN;
+    }
+    ""
+}
+
+fn log_output(workspace: &Path) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("log is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_log(&repo_root)? {
+        return Ok(output);
+    }
+    git_log(&repo_root)
+}
+
+fn try_gh_log(_repo_root: &Path) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_log(repo_root: &Path) -> Result<String> {
+    let has_lg = std::process::Command::new("git")
+        .args(["config", "--global", "--get", "alias.lg"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(repo_root);
+    command.args(["-c", "color.ui=always"]);
+    if has_lg {
+        command.arg("lg");
+    } else {
+        command.args([
+            "log",
+            "--color=always",
+            "--graph",
+            "--oneline",
+            "--decorate",
+        ]);
+    }
+
+    let output = command.output().context("failed to run git log")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git log failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let log = String::from_utf8_lossy(&output.stdout).to_string();
+    if log.trim().is_empty() {
+        Ok("No commits yet.".to_string())
+    } else {
+        Ok(log)
+    }
+}
+
 fn configured_git_diff_pager(repo_root: &Path) -> Result<Option<String>> {
     for key in ["pager.diff", "core.pager"] {
         let output = std::process::Command::new("git")
@@ -2696,6 +3556,713 @@ fn run_git_diff_pager(
 
 fn workspace_is_not_git(_workspace: &Path) -> Result<String> {
     Err(anyhow!("diff is only available inside a Git repository"))
+}
+
+fn parse_pull_pr_number(input: &str) -> Option<u64> {
+    for prefix in [
+        "pull pull request ",
+        "pull request ",
+        "pull pr ",
+        "pull #",
+        "pull ",
+    ] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix)
+            && let Ok(num) = rest.trim().parse::<u64>()
+        {
+            return Some(num);
+        }
+    }
+    None
+}
+
+fn pull_request_output(workspace: &Path, pr_number: u64) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("pull is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_pr_checkout(&repo_root, pr_number)? {
+        return Ok(output);
+    }
+    git_pr_checkout(&repo_root, pr_number)
+}
+
+fn try_gh_pr_checkout(repo_root: &Path, pr_number: u64) -> Result<Option<String>> {
+    let output = match std::process::Command::new("gh")
+        .args(["pr", "checkout", &pr_number.to_string()])
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("failed to run gh"),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "gh pr checkout failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut combined = stdout;
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&stderr);
+    }
+    Ok(Some(if combined.is_empty() {
+        format!("Checked out pull request #{pr_number}")
+    } else {
+        combined
+    }))
+}
+
+fn git_pr_checkout(repo_root: &Path, pr_number: u64) -> Result<String> {
+    let branch = format!("pr-{pr_number}");
+    let fetch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "fetch",
+            "origin",
+            "--force",
+            &format!("pull/{pr_number}/head:{branch}"),
+        ])
+        .output()
+        .context("failed to run git fetch")?;
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git fetch failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let checkout = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["checkout", &branch])
+        .output()
+        .context("failed to run git checkout")?;
+    if !checkout.status.success() {
+        let stderr = String::from_utf8_lossy(&checkout.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git checkout failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let mut parts = Vec::new();
+    let fetch_stderr = String::from_utf8_lossy(&fetch.stderr).trim().to_string();
+    if !fetch_stderr.is_empty() {
+        parts.push(fetch_stderr);
+    }
+    let checkout_stderr = String::from_utf8_lossy(&checkout.stderr).trim().to_string();
+    if !checkout_stderr.is_empty() {
+        parts.push(checkout_stderr);
+    }
+    Ok(if parts.is_empty() {
+        format!("Switched to branch '{branch}'")
+    } else {
+        parts.join("\n")
+    })
+}
+
+fn rebase_output(workspace: &Path) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("rebase is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_rebase(&repo_root)? {
+        return Ok(output);
+    }
+    git_rebase_main(&repo_root)
+}
+
+fn try_gh_rebase(repo_root: &Path) -> Result<Option<String>> {
+    let branch_output = match std::process::Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name",
+        ])
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("failed to run gh"),
+    };
+    if !branch_output.status.success() {
+        return Ok(None);
+    }
+    let default_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
+    if default_branch.is_empty() {
+        return Ok(None);
+    }
+    git_rebase_onto(repo_root, &default_branch).map(Some)
+}
+
+fn git_rebase_main(repo_root: &Path) -> Result<String> {
+    for branch in ["main", "master"] {
+        let check = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["ls-remote", "--heads", "origin", branch])
+            .output()
+            .context("failed to run git ls-remote")?;
+        if check.status.success() && !check.stdout.is_empty() {
+            return git_rebase_onto(repo_root, branch);
+        }
+    }
+    Err(anyhow!(
+        "could not determine the default branch (tried main and master)"
+    ))
+}
+
+fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
+    let fetch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["fetch", "origin", branch])
+        .output()
+        .context("failed to run git fetch")?;
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git fetch failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let rebase = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rebase", &format!("origin/{branch}")])
+        .output()
+        .context("failed to run git rebase")?;
+    if !rebase.status.success() {
+        let stderr = String::from_utf8_lossy(&rebase.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&rebase.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git rebase failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&rebase.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Rebased onto origin/{branch}")
+    } else {
+        stdout
+    })
+}
+
+fn merge_output(workspace: &Path, branch: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("merge is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_merge(&repo_root, branch)? {
+        return Ok(output);
+    }
+    git_merge(&repo_root, branch)
+}
+
+fn try_gh_merge(repo_root: &Path, branch: &str) -> Result<Option<String>> {
+    let output = match std::process::Command::new("gh")
+        .args(["pr", "merge", "--merge", branch])
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).context("failed to run gh"),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "gh pr merge failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let mut combined = stdout;
+    if !stderr.is_empty() {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+        combined.push_str(&stderr);
+    }
+    Ok(Some(if combined.is_empty() {
+        format!("Merged branch '{branch}'")
+    } else {
+        combined
+    }))
+}
+
+fn git_merge(repo_root: &Path, branch: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["merge", branch])
+        .output()
+        .context("failed to run git merge")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git merge failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Merged '{branch}'")
+    } else {
+        stdout
+    })
+}
+
+fn checkout_output(workspace: &Path, target: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("checkout is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_checkout(&repo_root, target)? {
+        return Ok(output);
+    }
+    git_checkout(&repo_root, target)
+}
+
+fn try_gh_checkout(_repo_root: &Path, _target: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_checkout(repo_root: &Path, target: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["checkout", target])
+        .output()
+        .context("failed to run git checkout")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git checkout failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    Ok(format!("Switched to '{target}'"))
+}
+
+fn add_file_output(workspace: &Path, path: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("add_file is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_add_file(&repo_root, path)? {
+        return Ok(output);
+    }
+    git_add_file(&repo_root, path)
+}
+
+fn try_gh_add_file(_repo_root: &Path, _path: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_add_file(repo_root: &Path, path: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["add", path])
+        .output()
+        .context("failed to run git add")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git add failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    Ok(format!("Staged '{path}'"))
+}
+
+fn remove_file_output(workspace: &Path, path: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("remove_file is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_remove_file(&repo_root, path)? {
+        return Ok(output);
+    }
+    git_remove_file(&repo_root, path)
+}
+
+fn try_gh_remove_file(_repo_root: &Path, _path: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_remove_file(repo_root: &Path, path: &str) -> Result<String> {
+    let mut args = vec!["rm"];
+    if repo_root.join(path.trim_end_matches('/')).is_dir() {
+        args.push("-r");
+    }
+    args.push(path);
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(&args)
+        .output()
+        .context("failed to run git rm")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git rm failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    Ok(format!("Removed '{path}'"))
+}
+
+fn move_file_output(workspace: &Path, source: &str, destination: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("move_file is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_move_file(&repo_root, source, destination)? {
+        return Ok(output);
+    }
+    git_move_file(&repo_root, source, destination)
+}
+
+fn try_gh_move_file(
+    _repo_root: &Path,
+    _source: &str,
+    _destination: &str,
+) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_move_file(repo_root: &Path, source: &str, destination: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["mv", source, destination])
+        .output()
+        .context("failed to run git mv")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git mv failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    Ok(format!("Moved '{source}' to '{destination}'"))
+}
+
+fn cherry_pick_output(workspace: &Path, commit: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("cherry_pick is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_cherry_pick(&repo_root, commit)? {
+        return Ok(output);
+    }
+    git_cherry_pick(&repo_root, commit)
+}
+
+fn try_gh_cherry_pick(_repo_root: &Path, _commit: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_cherry_pick(repo_root: &Path, commit: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["cherry-pick", commit])
+        .output()
+        .context("failed to run git cherry-pick")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git cherry-pick failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Cherry-picked {commit}")
+    } else {
+        stdout
+    })
+}
+
+fn commit_output(workspace: &Path, message: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("commit is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_commit(&repo_root, message)? {
+        return Ok(output);
+    }
+    git_commit(&repo_root, message)
+}
+
+fn try_gh_commit(_repo_root: &Path, _message: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_commit(repo_root: &Path, message: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["commit", "-a", "-m", message])
+        .output()
+        .context("failed to run git commit")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git commit failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Committed: {message}")
+    } else {
+        stdout
+    })
+}
+
+fn push_output(workspace: &Path, force: bool) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("push is only available inside a Git repository"))?;
+    if let Some(output) = try_gh_push(&repo_root, force)? {
+        return Ok(output);
+    }
+    git_push(&repo_root, force)
+}
+
+fn try_gh_push(_repo_root: &Path, _force: bool) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_push(repo_root: &Path, force: bool) -> Result<String> {
+    let branch = git_current_branch(repo_root)?;
+    if force && is_protected_branch(&branch) {
+        return Err(anyhow!(
+            "force push is not allowed on the '{}' branch",
+            branch
+        ));
+    }
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(repo_root).arg("push");
+    if force {
+        command.arg("-f");
+    }
+    command.args(["origin", &branch]);
+    let output = command.output().context("failed to run git push")?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = [&stdout, &stderr]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git push failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let combined = [stdout, stderr]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(if combined.is_empty() {
+        format!("Pushed '{branch}' to origin")
+    } else {
+        combined
+    })
+}
+
+fn git_current_branch(repo_root: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["branch", "--show-current"])
+        .output()
+        .context("failed to run git branch")?;
+    if !output.status.success() {
+        return Err(anyhow!("failed to determine current branch"));
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if branch.is_empty() {
+        return Err(anyhow!(
+            "could not determine current branch (detached HEAD?)"
+        ));
+    }
+    Ok(branch)
+}
+
+fn is_protected_branch(branch: &str) -> bool {
+    matches!(branch, "main" | "master")
+}
+
+fn init_repo_output(workspace: &Path) -> Result<String> {
+    if let Some(output) = try_gh_init_repo(workspace)? {
+        return Ok(output);
+    }
+    git_init(workspace)
+}
+
+fn try_gh_init_repo(_workspace: &Path) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_init(workspace: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(workspace)
+        .output()
+        .context("failed to run git init")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git init failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Initialized Git repository in {}", workspace.display())
+    } else {
+        stdout
+    })
+}
+
+fn delete_branch_usage_message() -> &'static str {
+    "Usage: /delete <branch>"
+}
+
+fn delete_branch_output(workspace: &Path, branch: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("delete is only available inside a Git repository"))?;
+    if is_protected_branch(branch) {
+        return Err(anyhow!("deleting the '{}' branch is not allowed", branch));
+    }
+    if let Some(output) = try_gh_delete_branch(&repo_root, branch)? {
+        return Ok(output);
+    }
+    git_delete_branch(&repo_root, branch)
+}
+
+fn try_gh_delete_branch(_repo_root: &Path, _branch: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn git_delete_branch(repo_root: &Path, branch: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["branch", "-D", branch])
+        .output()
+        .context("failed to run git branch -D")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git branch -D failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    Ok(format!("Deleted branch '{branch}'"))
 }
 
 fn current_terminal_width() -> usize {
@@ -3252,11 +4819,13 @@ fn format_tools(tools: &ToolExecutor) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANSI_RESET, CommandContext, CommandOutcome, CommandState, EscapeCancelState,
-        GitLineMetadata, InputContext, InputState, InterruptState, LocalCommand, OutputState,
-        RenderContext, ShowFileOptions, completion_candidates, discover_git_dir, discover_git_root,
-        final_pending_line, format_show_file_line, git_workspace_diff, handle_command,
-        handle_input_event, idle_status_refresh_timeout, is_wait_cancel_escape,
+        ANSI_FG_LIGHT_GREEN, ANSI_FG_LIGHT_RED, ANSI_RESET, CommandContext, CommandOutcome,
+        CommandState, EscapeCancelState, GitLineMetadata, InputContext, InputState, InterruptState,
+        LocalCommand, OutputState, RenderContext, ShowFileOptions, colorize_git_status,
+        completion_candidates, discover_git_dir, discover_git_root, final_pending_line,
+        format_show_file_line, git_workspace_diff, handle_command, handle_input_event,
+        delete_branch_output, idle_status_refresh_timeout, init_repo_output, is_protected_branch,
+        is_wait_cancel_escape,
         list_workspace_files_tree, llm_prompt_block_reason, parse_local_command,
         parse_show_file_arguments, preserve_cancelled_output, render_left_status,
         render_markdown_for_console, request_cancelled_message, resolve_workspace_root,
@@ -3847,6 +5416,960 @@ mod tests {
         match parse_local_command("switch model to local") {
             Some(LocalCommand::SetModel(name)) => assert_eq!(name, "local"),
             _ => panic!("expected set model command"),
+        }
+    }
+
+    #[test]
+    fn parses_pull_request_commands() {
+        assert!(matches!(
+            parse_local_command("/pull 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("/pull"),
+            Some(LocalCommand::Pull(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/pull notanumber"),
+            Some(LocalCommand::Pull(None))
+        ));
+        assert!(matches!(
+            parse_local_command("pull 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("Pull 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("pull pr 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("pull request 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("pull pull request 58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+        assert!(matches!(
+            parse_local_command("pull #58"),
+            Some(LocalCommand::Pull(Some(58)))
+        ));
+    }
+
+    #[test]
+    fn parses_status_commands() {
+        assert!(matches!(
+            parse_local_command("/status"),
+            Some(LocalCommand::Status)
+        ));
+        assert!(matches!(
+            parse_local_command("status"),
+            Some(LocalCommand::Status)
+        ));
+        assert!(matches!(
+            parse_local_command("Status"),
+            Some(LocalCommand::Status)
+        ));
+        assert!(matches!(
+            parse_local_command("show status"),
+            Some(LocalCommand::Status)
+        ));
+        assert!(matches!(
+            parse_local_command("git status"),
+            Some(LocalCommand::Status)
+        ));
+    }
+
+    #[test]
+    fn parses_log_commands() {
+        assert!(matches!(
+            parse_local_command("/log"),
+            Some(LocalCommand::Log)
+        ));
+        assert!(matches!(
+            parse_local_command("log"),
+            Some(LocalCommand::Log)
+        ));
+        assert!(matches!(
+            parse_local_command("Log"),
+            Some(LocalCommand::Log)
+        ));
+        assert!(matches!(
+            parse_local_command("show log"),
+            Some(LocalCommand::Log)
+        ));
+        assert!(matches!(
+            parse_local_command("git log"),
+            Some(LocalCommand::Log)
+        ));
+        assert!(matches!(
+            parse_local_command("git lg"),
+            Some(LocalCommand::Log)
+        ));
+    }
+
+    #[test]
+    fn colorizes_git_status_output() {
+        let raw = "## main...origin/main\nA  new_file.rs\n M modified.rs\nD  deleted.rs\n?? untracked.txt\n";
+        let colored = colorize_git_status(raw);
+        // Branch line uses subtle color
+        assert!(colored.contains("## main...origin/main"));
+        // Added line (A) uses green
+        let green_start = colored
+            .find(ANSI_FG_LIGHT_GREEN)
+            .expect("green color present");
+        assert!(colored[green_start..].contains("new_file.rs"));
+        // Deleted line (D) uses red
+        let red_start = colored.find(ANSI_FG_LIGHT_RED).expect("red color present");
+        assert!(colored[red_start..].contains("deleted.rs"));
+        // Modified line (M) has no special color prefix
+        let mod_idx = colored.find("modified.rs").expect("modified.rs present");
+        let before_mod = &colored[..mod_idx];
+        assert!(!before_mod.ends_with(ANSI_FG_LIGHT_RED));
+        assert!(!before_mod.ends_with(ANSI_FG_LIGHT_GREEN));
+        // Untracked (??) uses green
+        assert!(colored.contains("untracked.txt"));
+        let green_positions: Vec<_> = colored.match_indices(ANSI_FG_LIGHT_GREEN).collect();
+        assert!(green_positions.len() >= 2);
+    }
+
+    #[test]
+    fn parses_rebase_commands() {
+        assert!(matches!(
+            parse_local_command("/rebase"),
+            Some(LocalCommand::Rebase)
+        ));
+        assert!(matches!(
+            parse_local_command("rebase"),
+            Some(LocalCommand::Rebase)
+        ));
+        assert!(matches!(
+            parse_local_command("Rebase"),
+            Some(LocalCommand::Rebase)
+        ));
+        assert!(matches!(
+            parse_local_command("git rebase"),
+            Some(LocalCommand::Rebase)
+        ));
+    }
+
+    #[test]
+    fn parses_merge_commands() {
+        assert!(matches!(
+            parse_local_command("/merge"),
+            Some(LocalCommand::Merge(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/merge "),
+            Some(LocalCommand::Merge(None))
+        ));
+        assert!(matches!(
+            parse_local_command("merge"),
+            Some(LocalCommand::Merge(None))
+        ));
+        assert!(matches!(
+            parse_local_command("Merge"),
+            Some(LocalCommand::Merge(None))
+        ));
+        match parse_local_command("/merge feature/foo") {
+            Some(LocalCommand::Merge(Some(branch))) => assert_eq!(branch.as_ref(), "feature/foo"),
+            _ => panic!("expected merge with branch"),
+        }
+        match parse_local_command("merge feature/foo") {
+            Some(LocalCommand::Merge(Some(branch))) => assert_eq!(branch.as_ref(), "feature/foo"),
+            _ => panic!("expected natural merge with branch"),
+        }
+        match parse_local_command("Merge feature/foo") {
+            Some(LocalCommand::Merge(Some(branch))) => assert_eq!(branch.as_ref(), "feature/foo"),
+            _ => panic!("expected case-insensitive merge with branch"),
+        }
+        match parse_local_command("git merge feature/foo") {
+            Some(LocalCommand::Merge(Some(branch))) => assert_eq!(branch.as_ref(), "feature/foo"),
+            _ => panic!("expected git merge natural language with branch"),
+        }
+    }
+
+    #[test]
+    fn completes_merge_branch_names() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("README.md"), "").expect("readme");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "README.md"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["branch", "feature/test"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git branch")
+                .success()
+        );
+
+        let (start, _, candidates) = completion_candidates(
+            "/merge feature/",
+            "/merge feature/".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("merge completion");
+        assert_eq!(start, "/merge ".len());
+        assert_eq!(candidates, vec!["feature/test".to_string()]);
+
+        let (start, _, natural_candidates) = completion_candidates(
+            "merge feature/",
+            "merge feature/".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("natural merge completion");
+        assert_eq!(start, "merge ".len());
+        assert_eq!(natural_candidates, vec!["feature/test".to_string()]);
+    }
+
+    #[test]
+    fn parses_checkout_commands() {
+        assert!(matches!(
+            parse_local_command("/checkout"),
+            Some(LocalCommand::Checkout(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/checkout "),
+            Some(LocalCommand::Checkout(None))
+        ));
+        assert!(matches!(
+            parse_local_command("checkout"),
+            Some(LocalCommand::Checkout(None))
+        ));
+        assert!(matches!(
+            parse_local_command("Checkout"),
+            Some(LocalCommand::Checkout(None))
+        ));
+        match parse_local_command("/checkout feature/foo") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "feature/foo")
+            }
+            _ => panic!("expected checkout with branch"),
+        }
+        match parse_local_command("checkout feature/foo") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "feature/foo")
+            }
+            _ => panic!("expected natural checkout with branch"),
+        }
+        match parse_local_command("Checkout README.md") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "README.md")
+            }
+            _ => panic!("expected case-insensitive checkout with file"),
+        }
+        match parse_local_command("git checkout feature/foo") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "feature/foo")
+            }
+            _ => panic!("expected git checkout natural language"),
+        }
+        match parse_local_command("switch to main") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "main")
+            }
+            _ => panic!("expected switch to main"),
+        }
+        match parse_local_command("Switch to main") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "main")
+            }
+            _ => panic!("expected case-insensitive switch to main"),
+        }
+        match parse_local_command("switch to feature/foo") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "feature/foo")
+            }
+            _ => panic!("expected switch to feature/foo"),
+        }
+        match parse_local_command("switch to main branch") {
+            Some(LocalCommand::Checkout(Some(target))) => {
+                assert_eq!(target.as_ref(), "main")
+            }
+            _ => panic!("expected switch to main branch -> main"),
+        }
+        assert!(matches!(
+            parse_local_command("switch to"),
+            Some(LocalCommand::Checkout(None))
+        ));
+    }
+
+    #[test]
+    fn completes_checkout_targets() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("README.md"), "").expect("readme");
+        fs::write(workspace.path().join("todo.txt"), "").expect("todo");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "README.md", "todo.txt"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["branch", "topic/fix"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git branch")
+                .success()
+        );
+
+        // Branch match: "t" matches "topic/fix" before "todo.txt"
+        let (start, _, candidates) =
+            completion_candidates("/checkout t", "/checkout t".len(), workspace.path(), &[])
+                .expect("checkout completion");
+        assert_eq!(start, "/checkout ".len());
+        assert_eq!(candidates[0], "topic/fix");
+        assert!(candidates.contains(&"todo.txt".to_string()));
+
+        // Natural language form
+        let (start, _, natural_candidates) =
+            completion_candidates("checkout t", "checkout t".len(), workspace.path(), &[])
+                .expect("natural checkout completion");
+        assert_eq!(start, "checkout ".len());
+        assert_eq!(natural_candidates[0], "topic/fix");
+        assert!(natural_candidates.contains(&"todo.txt".to_string()));
+    }
+
+    #[test]
+    fn switch_to_completes_branches_and_tags() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("main.rs"), "").expect("main.rs");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "main.rs"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+        // Create a branch and a tag both starting with "m"
+        assert!(
+            std::process::Command::new("git")
+                .args(["branch", "mybranch"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git branch")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["tag", "mytag"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git tag")
+                .success()
+        );
+
+        let (start, _, candidates) =
+            completion_candidates("switch to m", "switch to m".len(), workspace.path(), &[])
+                .expect("switch to completion");
+        assert_eq!(start, "switch to ".len());
+        assert!(candidates.contains(&"mybranch".to_string()), "branch missing");
+        assert!(candidates.contains(&"mytag".to_string()), "tag missing");
+        // workspace files should NOT appear
+        assert!(!candidates.contains(&"main.rs".to_string()), "file should not appear");
+    }
+
+    #[test]
+    fn parses_add_file_commands() {
+        assert!(matches!(
+            parse_local_command("/add_file"),
+            Some(LocalCommand::AddFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/add_file "),
+            Some(LocalCommand::AddFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("add"),
+            Some(LocalCommand::AddFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("Add"),
+            Some(LocalCommand::AddFile(None))
+        ));
+        match parse_local_command("/add_file README.md") {
+            Some(LocalCommand::AddFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected add_file with path"),
+        }
+        match parse_local_command("add README.md") {
+            Some(LocalCommand::AddFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected natural add with path"),
+        }
+        match parse_local_command("Add src/") {
+            Some(LocalCommand::AddFile(Some(path))) => assert_eq!(path.as_ref(), "src/"),
+            _ => panic!("expected case-insensitive add with directory"),
+        }
+        match parse_local_command("add file README.md") {
+            Some(LocalCommand::AddFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected add file prefix"),
+        }
+        match parse_local_command("git add README.md") {
+            Some(LocalCommand::AddFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected git add natural language"),
+        }
+    }
+
+    #[test]
+    fn completes_add_file_untracked() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("tracked.rs"), "").expect("tracked file");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "tracked.rs"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+        fs::create_dir(workspace.path().join("newdir")).expect("new dir");
+        fs::write(workspace.path().join("newdir/file.rs"), "").expect("dir file");
+        fs::write(workspace.path().join("newfile.txt"), "").expect("new file");
+
+        // "n" matches directory "newdir/" before file "newfile.txt"
+        let (start, _, candidates) =
+            completion_candidates("/add_file n", "/add_file n".len(), workspace.path(), &[])
+                .expect("add_file completion");
+        assert_eq!(start, "/add_file ".len());
+        assert_eq!(candidates[0], "newdir/");
+        assert!(candidates.contains(&"newfile.txt".to_string()));
+        // tracked file not included
+        assert!(!candidates.contains(&"tracked.rs".to_string()));
+
+        // Natural-language form
+        let (start, _, nat_candidates) =
+            completion_candidates("add n", "add n".len(), workspace.path(), &[])
+                .expect("natural add_file completion");
+        assert_eq!(start, "add ".len());
+        assert_eq!(nat_candidates[0], "newdir/");
+    }
+
+    #[test]
+    fn parses_remove_file_commands() {
+        assert!(matches!(
+            parse_local_command("/remove_file"),
+            Some(LocalCommand::RemoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/remove_file "),
+            Some(LocalCommand::RemoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("remove"),
+            Some(LocalCommand::RemoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("Remove"),
+            Some(LocalCommand::RemoveFile(None))
+        ));
+        match parse_local_command("/remove_file README.md") {
+            Some(LocalCommand::RemoveFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected remove_file with path"),
+        }
+        match parse_local_command("remove README.md") {
+            Some(LocalCommand::RemoveFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected natural remove with path"),
+        }
+        match parse_local_command("Remove src/") {
+            Some(LocalCommand::RemoveFile(Some(path))) => assert_eq!(path.as_ref(), "src/"),
+            _ => panic!("expected case-insensitive remove with directory"),
+        }
+        match parse_local_command("remove file README.md") {
+            Some(LocalCommand::RemoveFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected remove file prefix"),
+        }
+        match parse_local_command("git rm README.md") {
+            Some(LocalCommand::RemoveFile(Some(path))) => assert_eq!(path.as_ref(), "README.md"),
+            _ => panic!("expected git rm natural language"),
+        }
+    }
+
+    #[test]
+    fn completes_remove_file_tracked() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::create_dir(workspace.path().join("src")).expect("src dir");
+        fs::write(workspace.path().join("src/main.rs"), "").expect("main.rs");
+        fs::write(workspace.path().join("schema.sql"), "").expect("schema.sql");
+        fs::write(workspace.path().join("untracked.txt"), "").expect("untracked");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "src/main.rs", "schema.sql"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+
+        // "s" matches directory "src/" before file "schema.sql"
+        let (start, _, candidates) = completion_candidates(
+            "/remove_file s",
+            "/remove_file s".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("remove_file completion");
+        assert_eq!(start, "/remove_file ".len());
+        assert_eq!(candidates[0], "src/");
+        assert!(candidates.contains(&"schema.sql".to_string()));
+        // untracked file not included
+        assert!(!candidates.contains(&"untracked.txt".to_string()));
+
+        // Natural-language form
+        let (start, _, nat_candidates) =
+            completion_candidates("remove s", "remove s".len(), workspace.path(), &[])
+                .expect("natural remove_file completion");
+        assert_eq!(start, "remove ".len());
+        assert_eq!(nat_candidates[0], "src/");
+    }
+
+    #[test]
+    fn parses_move_file_commands() {
+        assert!(matches!(
+            parse_local_command("/move_file"),
+            Some(LocalCommand::MoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/move_file "),
+            Some(LocalCommand::MoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/move_file onlyone"),
+            Some(LocalCommand::MoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("move"),
+            Some(LocalCommand::MoveFile(None))
+        ));
+        assert!(matches!(
+            parse_local_command("Move"),
+            Some(LocalCommand::MoveFile(None))
+        ));
+        match parse_local_command("/move_file old.rs new.rs") {
+            Some(LocalCommand::MoveFile(Some((src, dst)))) => {
+                assert_eq!(src.as_ref(), "old.rs");
+                assert_eq!(dst.as_ref(), "new.rs");
+            }
+            _ => panic!("expected move_file with source and destination"),
+        }
+        match parse_local_command("move old.rs new.rs") {
+            Some(LocalCommand::MoveFile(Some((src, dst)))) => {
+                assert_eq!(src.as_ref(), "old.rs");
+                assert_eq!(dst.as_ref(), "new.rs");
+            }
+            _ => panic!("expected natural move with source and destination"),
+        }
+        match parse_local_command("move file old.rs new.rs") {
+            Some(LocalCommand::MoveFile(Some((src, dst)))) => {
+                assert_eq!(src.as_ref(), "old.rs");
+                assert_eq!(dst.as_ref(), "new.rs");
+            }
+            _ => panic!("expected move file prefix"),
+        }
+        match parse_local_command("git mv old.rs new.rs") {
+            Some(LocalCommand::MoveFile(Some((src, dst)))) => {
+                assert_eq!(src.as_ref(), "old.rs");
+                assert_eq!(dst.as_ref(), "new.rs");
+            }
+            _ => panic!("expected git mv natural language"),
+        }
+    }
+
+    #[test]
+    fn completes_move_file_targets() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::create_dir(workspace.path().join("src")).expect("src dir");
+        fs::write(workspace.path().join("src/main.rs"), "").expect("main.rs");
+        fs::write(workspace.path().join("readme.md"), "").expect("readme");
+        fs::write(workspace.path().join("untracked.txt"), "").expect("untracked");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "src/main.rs", "readme.md"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "initial"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+
+        // First arg: "s" matches tracked "src/" (directory) — untracked file absent
+        let (start, _, src_candidates) =
+            completion_candidates("/move_file s", "/move_file s".len(), workspace.path(), &[])
+                .expect("move_file source completion");
+        assert_eq!(start, "/move_file ".len());
+        assert_eq!(src_candidates[0], "src/");
+        assert!(!src_candidates.contains(&"untracked.txt".to_string()));
+
+        // Second arg: completes workspace files (not filtered by tracked status)
+        let (start, _, dst_candidates) = completion_candidates(
+            "/move_file src/main.rs u",
+            "/move_file src/main.rs u".len(),
+            workspace.path(),
+            &[],
+        )
+        .expect("move_file destination completion");
+        assert_eq!(start, "/move_file src/main.rs ".len());
+        assert!(dst_candidates.contains(&"untracked.txt".to_string()));
+
+        // Natural-language form — first arg
+        let (start, _, nat_candidates) =
+            completion_candidates("move s", "move s".len(), workspace.path(), &[])
+                .expect("natural move_file completion");
+        assert_eq!(start, "move ".len());
+        assert_eq!(nat_candidates[0], "src/");
+    }
+
+    #[test]
+    fn parses_cherry_pick_commands() {
+        assert!(matches!(
+            parse_local_command("/cherry_pick"),
+            Some(LocalCommand::CherryPick(None))
+        ));
+        match parse_local_command("/cherry_pick abc1234") {
+            Some(LocalCommand::CherryPick(Some(commit))) => {
+                assert_eq!(commit.as_ref(), "abc1234");
+            }
+            _ => panic!("expected cherry_pick with commit"),
+        }
+        match parse_local_command("cherry pick abc1234") {
+            Some(LocalCommand::CherryPick(Some(commit))) => {
+                assert_eq!(commit.as_ref(), "abc1234");
+            }
+            _ => panic!("expected natural cherry pick with commit"),
+        }
+        match parse_local_command("cherry-pick abc1234") {
+            Some(LocalCommand::CherryPick(Some(commit))) => {
+                assert_eq!(commit.as_ref(), "abc1234");
+            }
+            _ => panic!("expected cherry-pick with commit"),
+        }
+        match parse_local_command("git cherry-pick abc1234") {
+            Some(LocalCommand::CherryPick(Some(commit))) => {
+                assert_eq!(commit.as_ref(), "abc1234");
+            }
+            _ => panic!("expected git cherry-pick with commit"),
+        }
+        assert!(matches!(
+            parse_local_command("cherry pick"),
+            Some(LocalCommand::CherryPick(None))
+        ));
+        assert!(matches!(
+            parse_local_command("cherry-pick"),
+            Some(LocalCommand::CherryPick(None))
+        ));
+    }
+
+    #[test]
+    fn completes_cherry_pick_commits() {
+        let workspace = tempdir().expect("workspace");
+        init_test_git_repo(workspace.path());
+        fs::write(workspace.path().join("readme.md"), "initial").expect("readme");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "readme.md"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "--quiet", "-m", "first commit"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+
+        // Completion with no token returns recent commit hashes from main
+        let result = completion_candidates(
+            "/cherry_pick ",
+            "/cherry_pick ".len(),
+            workspace.path(),
+            &[],
+        );
+        if let Some((start, _, candidates)) = result {
+            assert_eq!(start, "/cherry_pick ".len());
+            // Abbreviated hashes are 7 chars
+            assert!(candidates.iter().all(|h| h.len() >= 4));
+        }
+
+        // Natural-language form triggers completion
+        let nl_result =
+            completion_candidates("cherry pick ", "cherry pick ".len(), workspace.path(), &[]);
+        if let Some((start, _, _)) = nl_result {
+            assert_eq!(start, "cherry pick ".len());
+        }
+    }
+
+    #[test]
+    fn parses_commit_commands() {
+        assert!(matches!(
+            parse_local_command("/commit"),
+            Some(LocalCommand::Commit(None))
+        ));
+        assert!(matches!(
+            parse_local_command("commit"),
+            Some(LocalCommand::Commit(None))
+        ));
+        match parse_local_command("/commit [#42] My feature") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected commit with plain message"),
+        }
+        match parse_local_command("/commit \"[#42] My feature\"") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected commit with double-quoted message"),
+        }
+        match parse_local_command("Commit \"[#42] My feature\"") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected natural commit with quoted message"),
+        }
+        match parse_local_command("commit [#42] My feature") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected natural commit without quotes"),
+        }
+        match parse_local_command("git commit -a -m \"[#42] My feature\"") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "[#42] My feature");
+            }
+            _ => panic!("expected git commit -a -m with quoted message"),
+        }
+        match parse_local_command("git commit -m fixed") {
+            Some(LocalCommand::Commit(Some(msg))) => {
+                assert_eq!(msg.as_ref(), "fixed");
+            }
+            _ => panic!("expected git commit -m form"),
+        }
+    }
+
+    #[test]
+    fn parses_push_commands() {
+        assert!(matches!(
+            parse_local_command("/push"),
+            Some(LocalCommand::Push(false))
+        ));
+        assert!(matches!(
+            parse_local_command("/push --force"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("/push -f"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("/push force"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("push"),
+            Some(LocalCommand::Push(false))
+        ));
+        assert!(matches!(
+            parse_local_command("Push"),
+            Some(LocalCommand::Push(false))
+        ));
+        assert!(matches!(
+            parse_local_command("git push"),
+            Some(LocalCommand::Push(false))
+        ));
+        assert!(matches!(
+            parse_local_command("force push"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("push force"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("push --force"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("git push --force"),
+            Some(LocalCommand::Push(true))
+        ));
+        assert!(matches!(
+            parse_local_command("git push origin --force"),
+            Some(LocalCommand::Push(true))
+        ));
+    }
+
+    #[test]
+    fn force_push_blocked_on_protected_branches() {
+        assert!(is_protected_branch("main"));
+        assert!(is_protected_branch("master"));
+        assert!(!is_protected_branch("feature/my-branch"));
+        assert!(!is_protected_branch("develop"));
+    }
+
+    #[test]
+    fn parses_init_repo_commands() {
+        assert!(matches!(
+            parse_local_command("/init_repo"),
+            Some(LocalCommand::InitRepo)
+        ));
+        assert!(matches!(
+            parse_local_command("init"),
+            Some(LocalCommand::InitRepo)
+        ));
+        assert!(matches!(
+            parse_local_command("Init"),
+            Some(LocalCommand::InitRepo)
+        ));
+        assert!(matches!(
+            parse_local_command("init repo"),
+            Some(LocalCommand::InitRepo)
+        ));
+        assert!(matches!(
+            parse_local_command("Init Repo"),
+            Some(LocalCommand::InitRepo)
+        ));
+        assert!(matches!(
+            parse_local_command("git init"),
+            Some(LocalCommand::InitRepo)
+        ));
+    }
+
+    #[test]
+    fn init_repo_creates_git_repository() {
+        let workspace = tempdir().expect("workspace");
+        assert!(!workspace.path().join(".git").exists());
+        let result = init_repo_output(workspace.path());
+        assert!(result.is_ok(), "init_repo_output failed: {:?}", result);
+        assert!(workspace.path().join(".git").exists());
+    }
+
+    #[test]
+    fn parses_delete_branch_commands() {
+        assert!(matches!(
+            parse_local_command("/delete feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("/delete"),
+            Some(LocalCommand::DeleteBranch(None))
+        ));
+        assert!(matches!(
+            parse_local_command("delete feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("Delete feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("delete branch feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("Delete Branch feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("git branch -D feature/foo"),
+            Some(LocalCommand::DeleteBranch(Some(_)))
+        ));
+        assert!(matches!(
+            parse_local_command("delete branch"),
+            Some(LocalCommand::DeleteBranch(None))
+        ));
+        assert!(matches!(
+            parse_local_command("delete"),
+            Some(LocalCommand::DeleteBranch(None))
+        ));
+    }
+
+    #[test]
+    fn delete_branch_blocked_on_protected_branches() {
+        let workspace = tempdir().expect("workspace");
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(workspace.path())
+            .output()
+            .expect("git init");
+        for branch in ["main", "master"] {
+            let result = super::delete_branch_output(workspace.path(), branch);
+            assert!(result.is_err(), "should block deletion of '{branch}'");
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains(branch),
+                "error should mention branch name: {msg}"
+            );
         }
     }
 

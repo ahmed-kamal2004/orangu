@@ -139,11 +139,25 @@ pub fn help_text() -> &'static str {
 /tools                                List tools
 /model [name]                         Switch to the configured model, or a specific model
 /diff                                 Show a color unified diff against the current branch
+/status                               Show working tree status with color highlighting
+/log                                  Show commit log (uses git lg alias if configured)
+/pull <number>                        Check out a GitHub pull request on a dedicated branch
+/rebase                               Rebase the current branch against master/main
+/merge <branch>                       Merge a branch into the current branch
+/checkout <branch|file>               Switch branch or restore a file
+/add_file <path>                      Stage a file or directory with git add
+/remove_file <path>                   Remove a file or directory from Git tracking
+/move_file <source> <destination>     Rename or move a tracked file with git mv
+/cherry_pick <commit>                 Cherry-pick a commit onto the current branch
+/commit <message>                     Commit all tracked changes with git commit -a -m
+/push [--force]                       Push the current branch to origin
+/init_repo                            Initialize a Git repository in the workspace
+/delete <branch>                      Delete a local branch with git branch -D
 /open_file <path>                     Open a workspace file in $EDITOR
 /clear                                Clear the current conversation
 /quit                                 Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `push`, `force push`, `init repo`, `delete feature/foo`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion."#
 }
@@ -542,6 +556,21 @@ impl OranguHelper {
                 "/show_file".to_string(),
                 "/tools".to_string(),
                 "/model".to_string(),
+                "/diff".to_string(),
+                "/status".to_string(),
+                "/log".to_string(),
+                "/pull".to_string(),
+                "/rebase".to_string(),
+                "/merge".to_string(),
+                "/checkout".to_string(),
+                "/add_file".to_string(),
+                "/remove_file".to_string(),
+                "/move_file".to_string(),
+                "/cherry_pick".to_string(),
+                "/commit".to_string(),
+                "/push".to_string(),
+                "/init_repo".to_string(),
+                "/delete".to_string(),
                 "/clear".to_string(),
                 "/quit".to_string(),
             ],

@@ -44,6 +44,22 @@ orangu --config ./orangu.conf
 - `/tools`
 - `/model`
 - `/reload`
+- `/diff`
+- `/status`
+- `/log`
+- `/pull 42`
+- `/rebase`
+- `/merge feature/foo`
+- `/checkout main`
+- `/add_file README.md`
+- `/remove_file README.md`
+- `/move_file old.rs new.rs`
+- `/cherry_pick <commit>`
+- `/commit <message>`
+- `/push`
+- `/push --force`
+- `/init_repo`
+- `/delete feature/foo`
 - `/open_file README.md`
 
 Then try a natural-language request such as:
@@ -59,6 +75,21 @@ open README.md
 show README.md
 list models
 list files
+pull 42
+log
+status
+rebase
+merge feature/foo
+checkout main
+add README.md
+remove README.md
+move old.rs new.rs
+cherry pick abc1234
+commit "[#42] My feature"
+push
+force push
+init repo
+delete feature/foo
 show help
 ```
 

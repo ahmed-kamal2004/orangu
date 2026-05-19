@@ -57,6 +57,22 @@ Then start with:
 /list_files
 /show_file README.md
 /tools
+/diff
+/status
+/log
+/pull 42
+/rebase
+/merge feature/foo
+/checkout main
+/add_file README.md
+/remove_file README.md
+/move_file old.rs new.rs
+/cherry_pick abc1234
+/commit "[#42] My feature"
+/push
+/push --force
+/init_repo
+/delete feature/foo
 ```
 
 By default the tools operate on the current directory. Use `--workspace /path/to/project` to point **orangu** at another tree.

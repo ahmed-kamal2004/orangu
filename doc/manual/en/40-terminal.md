@@ -71,6 +71,20 @@ All slash commands are handled locally. They are not sent to the model.
 | `/tools` | List tools |
 | `/model [name]` | Switch to the configured model, or a specific model |
 | `/diff` | Show a color unified diff against the current branch |
+| `/status` | Show working tree status with color highlighting |
+| `/log` | Show commit log (uses `git lg` alias if configured) |
+| `/pull <number>` | Check out a GitHub pull request on a dedicated branch |
+| `/rebase` | Rebase the current branch against master/main |
+| `/merge <branch>` | Merge a branch into the current branch |
+| `/checkout <branch\|file>` | Switch branch or restore a file |
+| `/add_file <path>` | Stage a file or directory with git add |
+| `/remove_file <path>` | Remove a file or directory from Git tracking |
+| `/move_file <source> <destination>` | Rename or move a tracked file with git mv |
+| `/cherry_pick <commit>` | Cherry-pick a commit onto the current branch |
+| `/commit <message>` | Commit all tracked changes with git commit -a -m |
+| `/push [--force]` | Push the current branch to origin |
+| `/init_repo` | Initialize a Git repository in the workspace |
+| `/delete <branch>` | Delete a local branch |
 | `/open_file <path>` | Open a workspace file in $EDITOR |
 | `/clear` | Clear the current conversation |
 | `/quit` | Exit the client |
@@ -85,6 +99,20 @@ Free-form prompts are blocked when the server or model status in the header is r
 - `/open_file <path>` is workspace-scoped; paths outside the workspace are rejected
 - `/show_file [--hash] [--author] <path>` is workspace-scoped; when `bat` is installed it is used for the plain file view, otherwise the built-in syntax-highlighted renderer is used, and Git blame hash/author columns still use the built-in renderer
 - `/diff` uses `git diff` inside Git repositories and applies configured non-interactive Git pagers such as `delta`; outside Git repositories it keeps the existing non-Git behavior
+- `/status` requires a Git repository and runs `git status --branch --short`; `gh` has no equivalent so it always uses plain Git; added files and untracked entries are shown in green, deleted entries in red, and modified entries in the default terminal color; the branch line is shown in a muted color
+- `/log` requires a Git repository; if a `lg` alias is found in `~/.gitconfig` it runs `git lg`, otherwise it falls back to `git log --graph --oneline --decorate`; see the optional tools chapter for the recommended `git lg` alias setup
+- `/pull <number>` requires a Git repository; if `gh` is installed it uses `gh pr checkout`, otherwise it fetches the pull request directly from `origin`
+- `/rebase` requires a Git repository; if `gh` is installed it queries the repository default branch, otherwise it probes `origin/main` then `origin/master`
+- `/merge <branch>` requires a Git repository; if `gh` is installed it uses `gh pr merge --merge`, otherwise it uses `git merge`
+- `/checkout <branch|file>` requires a Git repository and runs `git checkout`; Tab completion offers branch names first, then workspace file paths
+- `/add_file <path>` requires a Git repository and runs `git add`; Tab completion offers untracked directories first, then untracked files
+- `/remove_file <path>` requires a Git repository and runs `git rm` (with `-r` for directories); Tab completion offers tracked directories first, then tracked files
+- `/move_file <source> <destination>` requires a Git repository and runs `git mv`; Tab completion for the first argument offers tracked directories first, then tracked files; Tab completion for the second argument offers workspace paths
+- `/cherry_pick <commit>` requires a Git repository and runs `git cherry-pick`; `gh` has no equivalent so it always uses plain Git; Tab completion offers abbreviated commit hashes from the default branch (`origin/main`, `origin/master`, `main`, or `master`)
+- `/commit <message>` requires a Git repository and runs `git commit -a -m <message>`; `gh` has no equivalent so it always uses plain Git; the message may be bare (`/commit Fix the bug`) or quoted (`/commit "[#42] My feature"`)
+- `/push [--force]` requires a Git repository and runs `git push origin <branch>` using the current branch name; `gh` has no equivalent so it always uses plain Git; `--force` (or `-f` or `force`) runs `git push -f origin <branch>` but is blocked on `main` and `master` to prevent accidental history rewrites
+- `/init_repo` runs `git init` in the workspace directory; works both inside and outside an existing Git repository (reinitializing an existing repo is safe); `gh` has no equivalent so it always uses plain Git
+- `/delete <branch>` requires a Git repository and runs `git branch -D`; `gh` has no equivalent so it always uses plain Git; deleting `main` or `master` is blocked; Tab completion offers local branch names excluding `main` and `master`
 - `/list_files` is a local convenience command and is separate from the model-facing `list_directory` tool
 - `/reload` also clears the current conversation history in memory
 - `/quit` exits immediately, while `Ctrl+C` uses a two-step confirmation
@@ -101,6 +129,22 @@ Local commands can also be entered in plain language. Examples:
 - `show tools`
 - `show help`
 - `switch model to <name>`
+- `pull 58` or `pull request 58` or `pull #58`
+- `log` or `show log` or `git log` or `git lg`
+- `status` or `show status` or `git status`
+- `rebase` or `git rebase`
+- `merge feature/foo` or `git merge feature/foo`
+- `checkout main` or `checkout README.md` or `git checkout main`
+- `switch to main` or `switch to feature/foo` or `switch to main branch`
+- `add README.md` or `add file src/` or `git add README.md`
+- `remove README.md` or `remove file src/` or `git rm README.md`
+- `move old.rs new.rs` or `move file old.rs new.rs` or `git mv old.rs new.rs`
+- `cherry pick abc1234` or `cherry-pick abc1234` or `git cherry-pick abc1234`
+- `commit "[#42] My feature"` or `commit Fix the bug` or `git commit -m "Fix the bug"`
+- `push` or `git push` or `git push origin`
+- `force push` or `push force` or `push --force`
+- `init` or `init repo` or `git init`
+- `delete feature/foo` or `delete branch feature/foo` or `git branch -D feature/foo`
 
 Natural-language forms are recognized only for the built-in local command phrases. Ordinary prompts continue to go to the model.
 
@@ -141,13 +185,20 @@ Natural-language forms are recognized only for the built-in local command phrase
 
 Completion cycling is reset as soon as you edit the line, move the cursor, paste text, or otherwise change the input.
 
-The completion modes are:
+The completion modes are checked in order:
 
-1. If the line starts with `/`, complete built-in slash commands such as `/help`, `/list_models`, `/list_files`, `/show_file`, `/tools`, and `/quit`.
-2. If the line starts with `/model `, complete configured model profile names.
-3. If the line starts with `/open_file ` or `/show_file `, complete workspace file paths recursively. `/show_file` also completes `--hash` and `--author`.
-4. If the line starts with the natural-language prefixes `open `, `open file `, `edit `, or `edit file `, complete workspace file paths recursively.
-5. Otherwise, complete filesystem entries from the current token relative to the workspace, using the token before the cursor.
+1. If the line starts with `/checkout `, or with the natural-language prefixes `checkout ` or `git checkout `, complete branch names first (from `git branch --all`), then workspace file paths. Branch names always appear before file names in the candidate list. If the line starts with the natural-language prefix `switch to `, complete branch names and tag names (from `git tag`), sorted together; workspace file paths are excluded.
+2. If the line starts with `/add_file `, or with the natural-language prefixes `add `, `add file `, or `git add `, complete untracked directories first (from `git ls-files --others --directory`), then untracked files. Already-tracked content is excluded.
+3. If the line starts with `/remove_file `, or with the natural-language prefixes `remove `, `remove file `, or `git rm `, complete tracked directories first (from `git ls-files`), then tracked files. Untracked content is excluded.
+4. If the line starts with `/move_file `, or with the natural-language prefixes `move `, `move file `, or `git mv `, complete the first argument from tracked directories and files; complete the second argument from all workspace paths.
+5. If the line starts with `/cherry_pick `, or with the natural-language prefixes `cherry pick `, `cherry-pick `, or `git cherry-pick `, complete abbreviated commit hashes from the default branch (`origin/main`, `origin/master`, `main`, or `master`, tried in that order).
+6. If the line starts with `/merge `, or with the natural-language prefixes `merge ` or `git merge `, complete branch names from `git branch --all`.
+7. If the line starts with `/delete `, or with the natural-language prefixes `delete `, `delete branch `, or `git branch -D `, complete local branch names (from `git branch`) excluding `main` and `master`.
+8. If the line starts with `/model `, complete configured model profile names.
+9. If the line starts with `/open_file ` or `/show_file `, complete workspace file paths recursively. `/show_file` also completes `--hash` and `--author`.
+10. If the line starts with the natural-language prefixes `open `, `open file `, `edit `, or `edit file `, complete workspace file paths recursively.
+11. If the line starts with `/`, complete built-in slash commands such as `/help`, `/list_models`, `/list_files`, `/show_file`, `/tools`, and `/quit`.
+12. Otherwise, complete filesystem entries from the current token relative to the workspace, using the token before the cursor.
 
 Path-completion details:
 
