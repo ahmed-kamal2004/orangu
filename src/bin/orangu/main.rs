@@ -57,9 +57,9 @@ use commands::{
 use git::{
     add_file_output, amend_output, checkout_output, cherry_pick_output, commit_output,
     delete_branch_output, git_diff_against_branch, git_workspace_diff, init_repo_output,
-    list_workspace_files_tree,
-    log_output, merge_output, move_file_output, open_in_editor, pull_request_output, push_output,
-    rebase_output, remove_file_output, squash_output, status_output, workspace_branch_name,
+    list_workspace_files_tree, log_output, merge_output, move_file_output, open_in_editor,
+    pull_request_output, push_output, rebase_output, remove_file_output, squash_output,
+    status_output, workspace_branch_name,
 };
 use input::{
     EscapeCancelState, InputContext, InputResult, InputState, InterruptState, OutputState,
