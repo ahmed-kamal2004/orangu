@@ -838,8 +838,13 @@ pub fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
 pub fn merge_output(workspace: &Path, branch: &str) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("merge is only available inside a Git repository"))?;
-    if let Some(output) = try_gh_merge(&repo_root, branch)? {
-        return Ok(output);
+    let is_local = git_local_branch_names(&repo_root)
+        .iter()
+        .any(|b| b == branch);
+    if !is_local {
+        if let Some(output) = try_gh_merge(&repo_root, branch)? {
+            return Ok(output);
+        }
     }
     git_merge(&repo_root, branch)
 }
@@ -885,7 +890,7 @@ pub fn git_merge(repo_root: &Path, branch: &str) -> Result<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .args(["merge", branch])
+        .args(["merge", "--ff", branch])
         .output()
         .context("failed to run git merge")?;
     if !output.status.success() {
