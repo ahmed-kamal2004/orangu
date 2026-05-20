@@ -841,10 +841,8 @@ pub fn merge_output(workspace: &Path, branch: &str) -> Result<String> {
     let is_local = git_local_branch_names(&repo_root)
         .iter()
         .any(|b| b == branch);
-    if !is_local {
-        if let Some(output) = try_gh_merge(&repo_root, branch)? {
-            return Ok(output);
-        }
+    if !is_local && let Some(output) = try_gh_merge(&repo_root, branch)? {
+        return Ok(output);
     }
     git_merge(&repo_root, branch)
 }
