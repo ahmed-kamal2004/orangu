@@ -608,13 +608,6 @@ mod tests {
             }
             Self { key, original }
         }
-        fn set_path(key: &'static str, value: &std::path::Path) -> Self {
-            let original = std::env::var_os(key);
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, original }
-        }
     }
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+mod build;
 mod commands;
 mod completion;
 mod git;
@@ -661,6 +662,10 @@ fn handle_command(
             }
         }
         LocalCommand::Usage => Ok(CommandOutcome::Output(usage_stats.format())),
+        LocalCommand::Build => match build::build_output(workspace) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
         LocalCommand::Clear => {
             let prompt = system_prompt(
                 llms.get(active_model)
@@ -1146,7 +1151,6 @@ mod tests {
         ffi::OsString,
         fs,
         path::PathBuf,
-        sync::Mutex,
         time::{Duration, Instant},
     };
     use tempfile::tempdir;

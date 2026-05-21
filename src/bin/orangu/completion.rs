@@ -52,6 +52,7 @@ pub const COMMANDS: &[&str] = &[
     "/delete",
     "/open_file",
     "/usage",
+    "/build",
     "/clear",
     "/quit",
 ];

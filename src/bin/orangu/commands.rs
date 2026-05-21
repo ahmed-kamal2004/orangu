@@ -140,6 +140,7 @@ pub enum LocalCommand<'a> {
     DeleteBranch(Option<Cow<'a, str>>),
     OpenFile(&'a str),
     Usage,
+    Build,
     Clear,
     Quit,
 }
@@ -198,6 +199,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/squash" => Some(LocalCommand::Squash),
         "/delete" => Some(LocalCommand::DeleteBranch(None)),
         "/usage" => Some(LocalCommand::Usage),
+        "/build" => Some(LocalCommand::Build),
         "/clear" => Some(LocalCommand::Clear),
         "/quit" => Some(LocalCommand::Quit),
         _ => {
@@ -373,6 +375,9 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         ],
     ) {
         return Some(LocalCommand::ModelInfo);
+    }
+    if matches_ci(input, &["build", "build project", "run build"]) {
+        return Some(LocalCommand::Build);
     }
     if matches_ci(input, &["diff", "show diff", "git diff"]) {
         return Some(LocalCommand::Diff(None));
@@ -826,21 +831,6 @@ pub fn delete_branch_usage_message() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orangu::{llm::normalized_openai_endpoint, session::ChatSession, tools::ToolExecutor};
-    use tempfile::tempdir;
-
-    fn test_profile(provider: &str, endpoint: &str, model: &str) -> LlmConfiguration {
-        LlmConfiguration {
-            provider: provider.to_string(),
-            endpoint: endpoint.to_string(),
-            model: model.to_string(),
-            api_key: None,
-            request_timeout_seconds: 1800,
-            max_tool_rounds: 10,
-            system_prompt: String::new(),
-        }
-    }
-
     #[test]
     fn leaves_regular_prompts_unhandled() {
         assert!(parse_local_command("help me understand this code").is_none());
