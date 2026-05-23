@@ -35,7 +35,10 @@ use orangu::{
     llm::{ChatMessage, StreamMetrics, normalized_openai_endpoint},
     session::ChatSession,
     tools::ToolExecutor,
-    tui::{ScreenRenderArgs, StatusFragment, render_screen, render_thinking_status, render_working_status},
+    tui::{
+        ScreenRenderArgs, StatusFragment, render_screen, render_thinking_status,
+        render_working_status,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -136,7 +139,10 @@ async fn run() -> Result<()> {
         Some(id) => (id.clone(), true),
         None => {
             let workspace_str = workspace.display().to_string();
-            match find_session_for_workspace_branch(&workspace_str, current_branch.as_deref().unwrap_or("")) {
+            match find_session_for_workspace_branch(
+                &workspace_str,
+                current_branch.as_deref().unwrap_or(""),
+            ) {
                 Some(existing_id) => (existing_id, true),
                 None => (Uuid::new_v4().to_string(), false),
             }
@@ -178,11 +184,12 @@ async fn run() -> Result<()> {
     let mut pending_commands = VecDeque::new();
     let mut usage_stats = UsageStats::new().with_session(&session_id);
     let mut history = load_history(&session_hist_path)?;
-    let mut startup_notice_until: Option<std::time::Instant> = if is_resumed && args.resume.is_none() {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs(5))
-    } else {
-        None
-    };
+    let mut startup_notice_until: Option<std::time::Instant> =
+        if is_resumed && args.resume.is_none() {
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(5))
+        } else {
+            None
+        };
     let status_http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
@@ -384,7 +391,8 @@ async fn run() -> Result<()> {
     }
 
     drop(_terminal_ui_guard);
-    if usage_stats.total_tokens == 0 && is_ephemeral_branch(current_branch.as_deref().unwrap_or("")) {
+    if usage_stats.total_tokens == 0 && is_ephemeral_branch(current_branch.as_deref().unwrap_or(""))
+    {
         delete_session_dir(&session_dir);
     } else {
         eprintln!("orangu --resume {session_id}");
@@ -1314,7 +1322,13 @@ fn list_sessions_output(workspace_filter: Option<&str>) -> Result<String> {
             .unwrap_or_else(|| "-".to_string());
         let branch = meta
             .as_ref()
-            .map(|m| if m.branch.is_empty() { "-" } else { m.branch.as_str() })
+            .map(|m| {
+                if m.branch.is_empty() {
+                    "-"
+                } else {
+                    m.branch.as_str()
+                }
+            })
             .unwrap_or("-");
         let workspace = meta.as_ref().map(|m| m.workspace.as_str()).unwrap_or("-");
         lines.push(format!(
