@@ -35,7 +35,7 @@ use orangu::{
     llm::{ChatMessage, StreamMetrics, normalized_openai_endpoint},
     session::ChatSession,
     tools::ToolExecutor,
-    tui::{ScreenRenderArgs, render_screen, render_thinking_status, render_working_status},
+    tui::{ScreenRenderArgs, StatusFragment, render_screen, render_thinking_status, render_working_status},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -136,7 +136,7 @@ async fn run() -> Result<()> {
         Some(id) => (id.clone(), true),
         None => {
             let workspace_str = workspace.display().to_string();
-            match find_session_for_workspace_branch(&workspace_str, current_branch.as_deref()) {
+            match find_session_for_workspace_branch(&workspace_str, current_branch.as_deref().unwrap_or("")) {
                 Some(existing_id) => (existing_id, true),
                 None => (Uuid::new_v4().to_string(), false),
             }
@@ -160,11 +160,9 @@ async fn run() -> Result<()> {
                 started_at: current_unix_timestamp(),
                 last_updated_at: current_unix_timestamp(),
                 workspace: workspace.display().to_string(),
-                branch: current_branch.clone(),
+                branch: current_branch.clone().unwrap_or_default(),
             },
         )?;
-    } else if args.resume.is_none() {
-        eprintln!("Resuming session {session_id}");
     }
 
     if is_resumed {
@@ -180,6 +178,11 @@ async fn run() -> Result<()> {
     let mut pending_commands = VecDeque::new();
     let mut usage_stats = UsageStats::new().with_session(&session_id);
     let mut history = load_history(&session_hist_path)?;
+    let mut startup_notice_until: Option<std::time::Instant> = if is_resumed && args.resume.is_none() {
+        Some(std::time::Instant::now() + std::time::Duration::from_secs(5))
+    } else {
+        None
+    };
     let status_http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()?;
@@ -205,12 +208,15 @@ async fn run() -> Result<()> {
             prompt_branch: prompt_branch.as_deref(),
             header_status,
         };
+        let resume_left_status = startup_notice_until
+            .filter(|&deadline| std::time::Instant::now() < deadline)
+            .map(|_| StatusFragment::plain(format!("Resuming session {session_id}")));
         print_screen(
             render,
             ScreenState {
                 transcript: output_state.lines(),
                 scroll_offset: output_state.scroll_offset(),
-                left_status: None,
+                left_status: resume_left_status,
                 pending_count: pending_commands.len(),
                 pending_line: None,
                 input: input_state.as_str(),
@@ -261,6 +267,7 @@ async fn run() -> Result<()> {
 
         output_state.push_input(&format!("> {next_input}"));
         output_state.reset_scroll();
+        startup_notice_until = None;
         print_screen(
             render,
             ScreenState {
@@ -377,7 +384,7 @@ async fn run() -> Result<()> {
     }
 
     drop(_terminal_ui_guard);
-    if usage_stats.total_tokens == 0 && is_ephemeral_branch(current_branch.as_deref()) {
+    if usage_stats.total_tokens == 0 && is_ephemeral_branch(current_branch.as_deref().unwrap_or("")) {
         delete_session_dir(&session_dir);
     } else {
         eprintln!("orangu --resume {session_id}");
@@ -1107,7 +1114,7 @@ struct SessionMetadata {
     last_updated_at: u64,
     workspace: String,
     #[serde(default)]
-    branch: Option<String>,
+    branch: String,
 }
 
 fn current_unix_timestamp() -> u64 {
@@ -1191,7 +1198,7 @@ fn update_session_metadata_timestamp(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_session_for_workspace_branch(workspace: &str, branch: Option<&str>) -> Option<String> {
+fn find_session_for_workspace_branch(workspace: &str, branch: &str) -> Option<String> {
     let sessions_dir = home::home_dir()?.join(SESSIONS_DIRECTORY);
     if !sessions_dir.exists() {
         return None;
@@ -1215,7 +1222,7 @@ fn find_session_for_workspace_branch(workspace: &str, branch: Option<&str>) -> O
         if meta.workspace != workspace {
             continue;
         }
-        if meta.branch.as_deref() != branch {
+        if meta.branch != branch {
             continue;
         }
         let has_messages = path
@@ -1235,8 +1242,8 @@ fn find_session_for_workspace_branch(workspace: &str, branch: Option<&str>) -> O
     }
 }
 
-fn is_ephemeral_branch(branch: Option<&str>) -> bool {
-    matches!(branch, None | Some("main") | Some("master"))
+fn is_ephemeral_branch(branch: &str) -> bool {
+    matches!(branch, "" | "main" | "master")
 }
 
 fn delete_session_dir(session_dir: &Path) {
@@ -1307,7 +1314,7 @@ fn list_sessions_output(workspace_filter: Option<&str>) -> Result<String> {
             .unwrap_or_else(|| "-".to_string());
         let branch = meta
             .as_ref()
-            .and_then(|m| m.branch.as_deref())
+            .map(|m| if m.branch.is_empty() { "-" } else { m.branch.as_str() })
             .unwrap_or("-");
         let workspace = meta.as_ref().map(|m| m.workspace.as_str()).unwrap_or("-");
         lines.push(format!(

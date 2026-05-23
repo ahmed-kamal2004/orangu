@@ -48,13 +48,13 @@ Each run of `orangu` creates or resumes a session identified by a UUID.
 
 ### Automatic resume
 
-On startup, `orangu` checks whether a session already exists for the current workspace path and Git branch. If exactly one matching session with conversation history is found, it is resumed automatically:
+On startup, `orangu` checks whether a session already exists for the current workspace path and Git branch. If exactly one matching session with conversation history is found, it is resumed automatically. The status bar lower-left shows:
 
 ```text
 Resuming session 550e8400-e29b-41d4-a716-446655440000
 ```
 
-This message appears on the primary terminal before the TUI starts. No `--resume` flag is needed for normal branch-based workflows.
+for five seconds or until the first command is run. No `--resume` flag is needed for normal branch-based workflows.
 
 If more than one session matches the current workspace and branch, a fresh session is started instead. Use `--resume <uuid>` to target a specific session explicitly.
 
@@ -101,7 +101,7 @@ The `metadata` file records when the session was created, last used, which works
 }
 ```
 
-`branch` is `null` for sessions started outside a Git repository or in a detached HEAD state. Timestamps are Unix seconds (UTC).
+`branch` is an empty string for sessions started outside a Git repository or in a detached HEAD state. Timestamps are Unix seconds (UTC).
 
 ### Listing and switching sessions
 

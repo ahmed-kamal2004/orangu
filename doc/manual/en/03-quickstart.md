@@ -76,16 +76,18 @@ Then start with:
 /squash
 /delete feature/foo
 /sessions
-/session 550e8400-e29b-41d4-a716-446655440000
+/session <UUID>
 ```
 
 By default the tools operate on the current directory. Use `--workspace /path/to/project` to point **orangu** at another tree.
 
-**orangu** automatically resumes an existing session when you return to the same workspace and Git branch. When a previous session is found, the UUID is printed before the TUI starts:
+**orangu** automatically resumes an existing session when you return to the same workspace and Git branch. When a previous session is found, the status bar shows:
 
 ```text
 Resuming session 550e8400-e29b-41d4-a716-446655440000
 ```
+
+for five seconds or until the first command is run.
 
 On exit, the resume command is printed so you can return to the session from a different branch or machine:
 
