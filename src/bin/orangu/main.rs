@@ -55,9 +55,9 @@ use anyhow::Error;
 use commands::{
     CommandContext, CommandOutcome, CommandState, LocalCommand, LocalError, add_file_usage_message,
     amend_usage_message, checkout_usage_message, cherry_pick_usage_message, commit_usage_message,
-    connect_usage_message, delete_branch_usage_message, merge_usage_message,
-    model_usage_message, move_file_usage_message, open_file_usage_message, parse_local_command,
-    pull_usage_message, remove_file_usage_message, sorted_model_names, system_prompt,
+    connect_usage_message, delete_branch_usage_message, merge_usage_message, model_usage_message,
+    move_file_usage_message, open_file_usage_message, parse_local_command, pull_usage_message,
+    remove_file_usage_message, sorted_model_names, system_prompt,
 };
 use git::{
     add_file_output, amend_output, checkout_output, cherry_pick_output, commit_output,

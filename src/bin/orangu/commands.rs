@@ -794,7 +794,6 @@ pub fn sorted_model_names(llms: &HashMap<String, LlmConfiguration>) -> Vec<Strin
     names
 }
 
-
 pub fn open_file_usage_message() -> &'static str {
     "Usage: /open_file <path>. Use /help to see available commands."
 }
