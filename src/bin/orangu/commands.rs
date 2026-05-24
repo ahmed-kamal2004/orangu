@@ -107,6 +107,7 @@ pub enum CommandOutcome {
     Output(String),
     Cleared,
     Quit,
+    Blocking(Box<dyn FnOnce() -> anyhow::Result<String> + Send + 'static>),
 }
 
 pub enum LocalCommand<'a> {

@@ -61,17 +61,19 @@ impl ChatSession {
         self.messages.truncate(checkpoint);
     }
 
-    pub async fn prompt<F, G>(
+    pub async fn prompt<F, G, H>(
         &mut self,
         user_input: &str,
         profile: &LlmConfiguration,
         tools: &ToolExecutor,
         mut on_text_delta: F,
         mut on_stream_metrics: G,
+        mut on_tool_running: H,
     ) -> Result<String>
     where
         F: FnMut(&str),
         G: FnMut(StreamMetrics),
+        H: FnMut(bool),
     {
         let client = OpenAiClient::from_profile(profile)?;
         let tool_definitions = tools.definitions();
@@ -97,6 +99,7 @@ impl ChatSession {
                         self.messages
                             .push(ChatMessage::assistant_tool_calls(tool_calls.clone()));
 
+                        on_tool_running(true);
                         for tool_call in tool_calls {
                             let rendered = match tools
                                 .execute(
@@ -112,6 +115,7 @@ impl ChatSession {
                             self.messages
                                 .push(ChatMessage::tool_result(&tool_call.id, &rendered));
                         }
+                        on_tool_running(false);
                     }
                 },
                 Err(err) => {

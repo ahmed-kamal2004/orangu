@@ -283,6 +283,19 @@ pub fn render_thinking_status(frame: usize, elapsed: Duration) -> StatusFragment
     }
 }
 
+pub fn render_tool_running_status(frame: usize, elapsed: Duration) -> StatusFragment {
+    let suffix = format!(" {}", format_elapsed_timer(elapsed));
+    StatusFragment {
+        rendered: format!(
+            "{}{}{}",
+            render_rolling_text(WORKING_TEXT, frame),
+            ANSI_RESET,
+            suffix
+        ),
+        visible_width: WORKING_TEXT.chars().count() + suffix.chars().count(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusFragment {
     pub rendered: String,

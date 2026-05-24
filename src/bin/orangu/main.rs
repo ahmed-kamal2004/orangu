@@ -37,7 +37,7 @@ use orangu::{
     tools::ToolExecutor,
     tui::{
         ScreenRenderArgs, StatusFragment, render_screen, render_thinking_status,
-        render_working_status,
+        render_tool_running_status, render_working_status,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -319,6 +319,34 @@ async fn run() -> Result<()> {
             }
             CommandOutcome::Output(output) => {
                 output_state.push_text(&output);
+                output_state.reset_scroll();
+                continue;
+            }
+            CommandOutcome::Blocking(f) => {
+                let handle = tokio::task::spawn_blocking(f);
+                // Recreate render here — handle_command's mutable borrows have ended.
+                let blocking_render = RenderContext {
+                    current_model: &active_model,
+                    endpoint: current_endpoint.as_deref().unwrap_or("(disconnected)"),
+                    workspace: tools.workspace(),
+                    prompt_branch: prompt_branch.as_deref(),
+                    header_status,
+                };
+                let result = wait_for_local_command(
+                    blocking_render,
+                    &mut output_state,
+                    &mut input_state,
+                    &mut interrupt_state,
+                    &mut pending_commands,
+                    &history,
+                    &model_names,
+                    handle,
+                )
+                .await?;
+                match result {
+                    Ok(output) => output_state.push_text(&output),
+                    Err(err) => output_state.push_text(&format!("Error: {err:#}")),
+                }
                 output_state.reset_scroll();
                 continue;
             }
@@ -752,10 +780,12 @@ fn handle_command(
             Err(err) => Ok(local_command_error(err)),
         },
         LocalCommand::Usage => Ok(CommandOutcome::Output(usage_stats.format())),
-        LocalCommand::Build => match build::build_output(workspace) {
-            Ok(output) => Ok(CommandOutcome::Output(output)),
-            Err(err) => Ok(local_command_error(err)),
-        },
+        LocalCommand::Build => {
+            let ws = workspace.to_path_buf();
+            Ok(CommandOutcome::Blocking(Box::new(move || {
+                build::build_output(&ws)
+            })))
+        }
         LocalCommand::Clear => {
             let prompt = system_prompt(
                 llms.get(active_model)
@@ -810,6 +840,7 @@ async fn wait_for_response(
     let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
     let prompt_output = Arc::clone(&streamed_state);
     let prompt_metrics = Arc::clone(&streamed_state);
+    let prompt_tool_running = Arc::clone(&streamed_state);
     let tokenizer = cl100k_base().ok();
     let mut prompt_future = Box::pin(session.prompt(
         user_input,
@@ -825,12 +856,22 @@ async fn wait_for_response(
                 state.metrics.merge(metrics);
             }
         },
+        move |running| {
+            if let Ok(mut state) = prompt_tool_running.lock() {
+                state.tool_running_since = if running {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
+            }
+        },
     ));
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
     let mut thinking_frame = 0usize;
     let thinking_started = std::time::Instant::now();
     let mut last_rendered_output = String::new();
     let mut last_rendered_metrics = StreamMetrics::default();
+    let mut last_tool_was_running = false;
     let mut escape_cancel_state = EscapeCancelState::default();
     let initial_status = render_thinking_status(thinking_frame, thinking_started.elapsed());
 
@@ -886,8 +927,10 @@ async fn wait_for_response(
                     .unwrap_or_default();
                 let current_streamed_output = current_state.output;
                 let current_stream_metrics = current_state.metrics;
+                let current_tool_running_since = current_state.tool_running_since;
                 redraw |= current_streamed_output != last_rendered_output;
                 redraw |= current_stream_metrics != last_rendered_metrics;
+                redraw |= current_tool_running_since.is_some() != last_tool_was_running;
 
                 while event::poll(std::time::Duration::ZERO)? {
                     let event = event::read()?;
@@ -939,10 +982,12 @@ async fn wait_for_response(
                 if redraw {
                     last_rendered_output = current_streamed_output;
                     last_rendered_metrics = current_stream_metrics;
+                    last_tool_was_running = current_tool_running_since.is_some();
                     let left_status = render_left_status(
                         profile,
                         &last_rendered_output,
                         &last_rendered_metrics,
+                        current_tool_running_since,
                         elapsed,
                         thinking_frame,
                         tokenizer.as_ref(),
@@ -971,14 +1016,76 @@ async fn wait_for_response(
     }
 }
 
+async fn wait_for_local_command(
+    render: RenderContext<'_>,
+    output_state: &mut OutputState,
+    input_state: &mut InputState,
+    interrupt_state: &mut InterruptState,
+    pending_commands: &mut VecDeque<String>,
+    history: &[String],
+    model_names: &[String],
+    mut handle: tokio::task::JoinHandle<anyhow::Result<String>>,
+) -> anyhow::Result<anyhow::Result<String>> {
+    let started = std::time::Instant::now();
+    let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
+    let mut frame = 0usize;
+    loop {
+        tokio::select! {
+            result = &mut handle => {
+                return Ok(result?);
+            }
+            _ = interval.tick() => {
+                let elapsed = started.elapsed();
+                let next_frame = (elapsed.as_millis() / THINKING_FRAME_INTERVAL.as_millis()) as usize;
+                if next_frame != frame {
+                    frame = next_frame;
+                }
+                while event::poll(std::time::Duration::ZERO)? {
+                    handle_input_event(
+                        event::read()?,
+                        input_state,
+                        interrupt_state,
+                        output_state,
+                        InputContext {
+                            history,
+                            workspace: render.workspace,
+                            model_names,
+                            render,
+                        },
+                    );
+                }
+                let left_status = render_tool_running_status(frame, elapsed);
+                print_screen(
+                    render,
+                    ScreenState {
+                        transcript: output_state.lines(),
+                        scroll_offset: output_state.scroll_offset(),
+                        left_status: Some(left_status),
+                        pending_count: pending_commands.len(),
+                        pending_line: None,
+                        input: input_state.as_str(),
+                        cursor: input_state.cursor(),
+                    },
+                );
+                std::io::stdout().flush()?;
+            }
+        }
+    }
+}
+
 fn render_left_status(
     profile: &LlmConfiguration,
     rendered_output: &str,
     metrics: &StreamMetrics,
+    tool_running_since: Option<std::time::Instant>,
     elapsed: std::time::Duration,
     frame: usize,
     tokenizer: Option<&tiktoken_rs::CoreBPE>,
 ) -> Option<orangu::tui::StatusFragment> {
+    if let Some(tool_start) = tool_running_since {
+        return Some(render_tool_running_status(frame, tool_start.elapsed()));
+    }
+
     if rendered_output.is_empty() {
         return Some(render_thinking_status(frame, elapsed));
     }
@@ -2714,6 +2821,7 @@ mod tests {
                 prompt_per_second: Some(15.0),
                 predicted_per_second: None,
             },
+            None,
             Duration::from_secs(2),
             0,
             None,
@@ -2733,6 +2841,7 @@ mod tests {
                 prompt_per_second: Some(15.0),
                 predicted_per_second: Some(42.5),
             },
+            None,
             Duration::from_secs(2),
             1,
             None,

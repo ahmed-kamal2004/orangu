@@ -84,6 +84,7 @@ pub struct ScreenState<'a> {
 pub struct StreamRenderState {
     pub output: String,
     pub metrics: StreamMetrics,
+    pub tool_running_since: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Default)]
