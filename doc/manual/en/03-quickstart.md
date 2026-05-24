@@ -53,30 +53,39 @@ Then start with:
 
 ```text
 /help
-/models
-/list_files
-/show_file README.md
+/connect
+/disconnect
+/reload
 /tools
-/diff
-/status
-/log
-/pull 42
-/rebase
-/merge feature/foo
-/checkout main
+/model
+/models
+/session <UUID>
+/sessions
+/list_files
+/open_file README.md
+/show_file README.md
+/build
 /add_file README.md
-/remove_file README.md
-/move_file old.rs new.rs
+/amend "[#42] My feature"
+/checkout main
 /cherry_pick abc1234
 /commit "[#42] My feature"
-/amend "[#42] My feature"
+/delete feature/foo
+/diff
+/init_repo
+/log
+/merge feature/foo
+/move_file old.rs new.rs
+/pull 42
 /push
 /push --force
-/init_repo
+/rebase
+/remove_file README.md
 /squash
-/delete feature/foo
-/sessions
-/session <UUID>
+/status
+/usage
+/clear
+/quit
 ```
 
 By default the tools operate on the current directory. Use `--workspace /path/to/project` to point **orangu** at another tree.

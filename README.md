@@ -114,18 +114,18 @@ Useful first commands:
 
 ```text
 /help
+/tools
 /models
 /list_files
+/open_file README.md
 /show_file README.md
-/tools
-/status
-/log
+/amend "[#42] My feature"
 /cherry_pick abc1234
 /commit "[#42] My feature"
-/amend "[#42] My feature"
-/squash
 /delete feature/foo
-/open_file README.md
+/log
+/squash
+/status
 ```
 
 ## Documentation

@@ -133,31 +133,32 @@ pub fn help_text() -> &'static str {
 /connect [url]                                Connect to the configured server, or a specific server
 /disconnect                                   Disconnect from the current server
 /reload                                       Restore the configured model and server
-/models                                       List models
-/list_files                                   List workspace files as a tree
-/show_file [--hash] [--author] <path> [<ref>] Show a file; optional ref uses git show
 /tools                                        List tools
 /model [name]                                 Switch to the configured model, or a specific model
-/diff                                         Show a color unified diff against the current branch
-/status                                       Show working tree status with color highlighting
-/log                                          Show commit log (uses git lg alias if configured)
-/pull <number>                                Check out a GitHub pull request on a dedicated branch
-/rebase                                       Rebase the current branch against master/main
-/merge <branch>                               Merge a branch into the current branch
-/checkout <branch|file>                       Switch branch or restore a file
-/add_file <path>                              Stage a file or directory with git add
-/remove_file <path>                           Remove a file or directory from Git tracking
-/move_file <source> <destination>             Rename or move a tracked file with git mv
-/cherry_pick <commit>                         Cherry-pick a commit onto the current branch
-/commit <message>                             Commit all tracked changes with git commit -a -m
-/amend <message>                              Rewrite the last commit message with git commit --amend
-/push [--force]                               Push the current branch to origin
-/init_repo                                    Initialize a Git repository in the workspace
-/squash                                       Squash all branch commits into one
-/delete <branch>                              Delete a local branch with git branch -D
-/open_file <path>                             Open a workspace file in $EDITOR
+/models                                       List models
 /session [uuid]                               List sessions or print resume command for a UUID (Tab cycles UUIDs)
 /sessions [workspace]                         List all sessions, optionally filtered by workspace path
+/list_files                                   List workspace files as a tree
+/open_file <path>                             Open a workspace file in $EDITOR
+/show_file [--hash] [--author] <path> [<ref>] Show a file; optional ref uses git show
+/build                                        Build the project
+/add_file <path>                              Stage a file or directory with git add
+/amend <message>                              Rewrite the last commit message with git commit --amend
+/checkout <branch|file>                       Switch branch or restore a file
+/cherry_pick <commit>                         Cherry-pick a commit onto the current branch
+/commit <message>                             Commit all tracked changes with git commit -a -m
+/delete <branch>                              Delete a local branch with git branch -D
+/diff                                         Show a color unified diff against the current branch
+/init_repo                                    Initialize a Git repository in the workspace
+/log                                          Show commit log (uses git lg alias if configured)
+/merge <branch>                               Merge a branch into the current branch
+/move_file <source> <destination>             Rename or move a tracked file with git mv
+/pull <number>                                Check out a GitHub pull request on a dedicated branch
+/push [--force]                               Push the current branch to origin
+/rebase                                       Rebase the current branch against master/main
+/remove_file <path>                           Remove a file or directory from Git tracking
+/squash                                       Squash all branch commits into one
+/status                                       Show working tree status with color highlighting
 /usage                                        Show usage statistics for this session
 /clear                                        Clear the current conversation
 /quit                                         Exit the client

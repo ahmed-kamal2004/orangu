@@ -38,31 +38,37 @@ orangu --config ./orangu.conf
 - `/help`
 - `/connect`
 - `/disconnect`
-- `/models`
-- `/list_files`
-- `/show_file README.md`
+- `/reload`
 - `/tools`
 - `/model`
-- `/reload`
-- `/diff`
-- `/status`
-- `/log`
-- `/pull 42`
-- `/rebase`
-- `/merge feature/foo`
-- `/checkout main`
+- `/models`
+- `/session`
+- `/sessions`
+- `/list_files`
+- `/open_file README.md`
+- `/show_file README.md`
+- `/build`
 - `/add_file README.md`
-- `/remove_file README.md`
-- `/move_file old.rs new.rs`
+- `/amend <message>`
+- `/checkout main`
 - `/cherry_pick <commit>`
 - `/commit <message>`
-- `/amend <message>`
+- `/delete feature/foo`
+- `/diff`
+- `/init_repo`
+- `/log`
+- `/merge feature/foo`
+- `/move_file old.rs new.rs`
+- `/pull 42`
 - `/push`
 - `/push --force`
-- `/init_repo`
+- `/rebase`
+- `/remove_file README.md`
 - `/squash`
-- `/delete feature/foo`
-- `/open_file README.md`
+- `/status`
+- `/usage`
+- `/clear`
+- `/quit`
 
 Then try a natural-language request such as:
 
