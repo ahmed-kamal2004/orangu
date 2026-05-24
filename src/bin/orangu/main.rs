@@ -333,13 +333,16 @@ async fn run() -> Result<()> {
                     header_status,
                 };
                 let result = wait_for_local_command(
-                    blocking_render,
-                    &mut output_state,
-                    &mut input_state,
-                    &mut interrupt_state,
-                    &mut pending_commands,
-                    &history,
-                    &model_names,
+                    WaitContext {
+                        render: blocking_render,
+                        history: &mut history,
+                        history_path: &session_hist_path,
+                        model_names: &model_names,
+                        interrupt_state: &mut interrupt_state,
+                        output_state: &mut output_state,
+                        input_state: &mut input_state,
+                        pending_commands: &mut pending_commands,
+                    },
                     handle,
                 )
                 .await?;
@@ -1017,15 +1020,19 @@ async fn wait_for_response(
 }
 
 async fn wait_for_local_command(
-    render: RenderContext<'_>,
-    output_state: &mut OutputState,
-    input_state: &mut InputState,
-    interrupt_state: &mut InterruptState,
-    pending_commands: &mut VecDeque<String>,
-    history: &[String],
-    model_names: &[String],
+    wait_context: WaitContext<'_>,
     mut handle: tokio::task::JoinHandle<anyhow::Result<String>>,
 ) -> anyhow::Result<anyhow::Result<String>> {
+    let WaitContext {
+        render,
+        history,
+        history_path: _,
+        model_names,
+        interrupt_state,
+        output_state,
+        input_state,
+        pending_commands,
+    } = wait_context;
     let started = std::time::Instant::now();
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
     let mut frame = 0usize;
