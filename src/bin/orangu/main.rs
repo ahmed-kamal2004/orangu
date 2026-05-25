@@ -1342,7 +1342,13 @@ async fn try_discover_new_models(
         .llms
         .values()
         .next()
-        .map(|p| (p.request_timeout_seconds, p.max_tool_rounds, p.system_prompt.clone()))
+        .map(|p| {
+            (
+                p.request_timeout_seconds,
+                p.max_tool_rounds,
+                p.system_prompt.clone(),
+            )
+        })
         .unwrap_or((1800, 10, String::new()));
 
     let mut added = Vec::new();
@@ -1372,11 +1378,7 @@ async fn try_discover_new_models(
                 continue;
             }
 
-            let base_name = model_id
-                .rsplit('/')
-                .next()
-                .unwrap_or(&model_id)
-                .to_string();
+            let base_name = model_id.rsplit('/').next().unwrap_or(&model_id).to_string();
             let section_name = if !config.llms.contains_key(&base_name) {
                 base_name
             } else {
@@ -1400,10 +1402,7 @@ async fn try_discover_new_models(
                 },
             );
 
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .append(true)
-                .open(config_path)
-            {
+            if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(config_path) {
                 let _ = writeln!(file);
                 let _ = writeln!(file, "[{section_name}]");
                 let _ = writeln!(file, "provider = {provider}");
