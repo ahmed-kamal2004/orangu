@@ -43,7 +43,7 @@ use orangu::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io::Write,
     path::{Component, Path, PathBuf},
     process::ExitCode,
@@ -113,7 +113,7 @@ async fn run() -> Result<()> {
             ));
         }
     };
-    let config = load_client_configuration(&config_path)?;
+    let mut config = load_client_configuration(&config_path)?;
     let quote_module = quotes::QuoteModule::from_str(&config.quotes);
     let workspace = resolve_workspace_root(args.workspace)?;
     let workspace_created = if !workspace.exists() {
@@ -124,6 +124,12 @@ async fn run() -> Result<()> {
         false
     };
     let tools = ToolExecutor::new(&workspace);
+
+    let status_http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+    let discovered_models =
+        try_discover_new_models(&status_http_client, &mut config, &config_path).await;
 
     let model_names = sorted_model_names(&config.llms);
     let startup_model = config.default_model.clone();
@@ -199,15 +205,22 @@ async fn run() -> Result<()> {
         } else {
             None
         };
-    let status_http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()?;
-
     if workspace_created {
         output_state.push_text(&format!("Created workspace {}", workspace.display()));
     }
 
-    if let Some((old_model, new_model)) = try_startup_model_switch(
+    for section_name in &discovered_models {
+        output_state.push_text(&format!("Added {section_name} model"));
+    }
+
+    if let Some(new_model) = discovered_models.first().filter(|_| !is_resumed) {
+        let old_model = std::mem::replace(&mut active_model, new_model.clone());
+        if let Some(profile) = config.llms.get(new_model) {
+            current_endpoint = Some(normalized_openai_endpoint(&profile.endpoint));
+            session.set_system_prompt(system_prompt(profile));
+        }
+        output_state.push_text(&format!("Switched model from {old_model} to {new_model}"));
+    } else if let Some((old_model, new_model)) = try_startup_model_switch(
         &status_http_client,
         &config,
         &mut active_model,
@@ -1307,6 +1320,103 @@ async fn probe_header_status(
         server_ok,
         model_ok,
     }
+}
+
+async fn try_discover_new_models(
+    http_client: &reqwest::Client,
+    config: &mut orangu::config::ClientAppConfiguration,
+    config_path: &Path,
+) -> Vec<String> {
+    let mut known_model_ids: HashSet<String> =
+        config.llms.values().map(|p| p.model.clone()).collect();
+
+    let mut seen_endpoints: HashSet<String> = HashSet::new();
+    let endpoints: Vec<(String, String)> = config
+        .llms
+        .values()
+        .filter(|p| seen_endpoints.insert(p.endpoint.clone()))
+        .map(|p| (p.endpoint.clone(), p.provider.clone()))
+        .collect();
+
+    let (fallback_timeout, fallback_max_tool_rounds, fallback_system_prompt) = config
+        .llms
+        .values()
+        .next()
+        .map(|p| (p.request_timeout_seconds, p.max_tool_rounds, p.system_prompt.clone()))
+        .unwrap_or((1800, 10, String::new()));
+
+    let mut added = Vec::new();
+
+    for (endpoint, provider) in &endpoints {
+        let url = format!("{}/v1/models", normalized_openai_endpoint(endpoint));
+        let Ok(response) = http_client.get(&url).send().await else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(models) = response.json::<ModelsResponse>().await else {
+            continue;
+        };
+
+        for entry in models.data.iter().chain(models.models.iter()) {
+            let model_id = if !entry.id.is_empty() {
+                entry.id.clone()
+            } else if !entry.model.is_empty() {
+                entry.model.clone()
+            } else {
+                continue;
+            };
+
+            if known_model_ids.contains(&model_id) {
+                continue;
+            }
+
+            let base_name = model_id
+                .rsplit('/')
+                .next()
+                .unwrap_or(&model_id)
+                .to_string();
+            let section_name = if !config.llms.contains_key(&base_name) {
+                base_name
+            } else {
+                model_id.replace('/', "-")
+            };
+
+            if config.llms.contains_key(&section_name) {
+                continue;
+            }
+
+            config.llms.insert(
+                section_name.clone(),
+                LlmConfiguration {
+                    provider: provider.clone(),
+                    endpoint: endpoint.clone(),
+                    model: model_id.clone(),
+                    api_key: None,
+                    request_timeout_seconds: fallback_timeout,
+                    max_tool_rounds: fallback_max_tool_rounds,
+                    system_prompt: fallback_system_prompt.clone(),
+                },
+            );
+
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .append(true)
+                .open(config_path)
+            {
+                let _ = writeln!(file);
+                let _ = writeln!(file, "[{section_name}]");
+                let _ = writeln!(file, "provider = {provider}");
+                let _ = writeln!(file, "endpoint = {endpoint}");
+                let _ = writeln!(file, "model = {model_id}");
+            }
+
+            known_model_ids.insert(model_id);
+            added.push(section_name);
+        }
+    }
+
+    added
 }
 
 async fn try_startup_model_switch(
