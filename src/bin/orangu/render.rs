@@ -27,7 +27,7 @@ use syntect::{
     util::{LinesWithEndings, as_24_bit_terminal_escaped},
 };
 
-use super::commands::{LocalError, ShowFileOptions, current_terminal_width, shell_words};
+use super::commands::{LocalError, ShowFileOptions, shell_words};
 use super::git::{discover_git_root, git_show_file_content};
 use orangu::tools::{ToolExecutor, resolve_workspace_path};
 
@@ -73,7 +73,7 @@ pub fn syntax_highlight_assets() -> &'static SyntaxHighlightAssets {
     })
 }
 
-pub fn show_file_output(workspace: &Path, raw_args: &str) -> Result<String> {
+pub fn show_file_output(workspace: &Path, raw_args: &str, virtual_width: usize) -> Result<String> {
     let (path, options, rev) = parse_show_file_arguments(raw_args)?;
     let resolved_path = resolve_workspace_path(workspace, &path)?;
 
@@ -93,7 +93,7 @@ pub fn show_file_output(workspace: &Path, raw_args: &str) -> Result<String> {
 
     if !options.show_hash
         && !options.show_author
-        && let Some(output) = show_file_output_with_bat(&resolved_path)?
+        && let Some(output) = show_file_output_with_bat(&resolved_path, virtual_width)?
     {
         return Ok(output);
     }
@@ -108,13 +108,13 @@ pub fn show_file_output(workspace: &Path, raw_args: &str) -> Result<String> {
     render_show_file_content(&resolved_path, &content, blame.as_deref(), options)
 }
 
-pub fn show_file_output_with_bat(path: &Path) -> Result<Option<String>> {
+pub fn show_file_output_with_bat(path: &Path, virtual_width: usize) -> Result<Option<String>> {
     let output = match std::process::Command::new("bat")
         .arg("--paging=never")
         .arg("--color=always")
         .arg("--style=numbers")
         .arg("--terminal-width")
-        .arg(current_terminal_width().to_string())
+        .arg(virtual_width.to_string())
         .arg(path)
         .output()
     {
@@ -694,7 +694,7 @@ mod tests {
         .expect("source file");
 
         let _path_guard = EnvVarGuard::set_value("PATH", "");
-        let output = show_file_output(workspace.path(), "main.rs").expect("show file");
+        let output = show_file_output(workspace.path(), "main.rs", 512).expect("show file");
         assert!(output.contains("1 "));
         assert!(output.contains("2 "));
         assert!(output.contains("\u{1b}["));
@@ -725,7 +725,7 @@ mod tests {
         let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
         let _columns_guard = EnvVarGuard::set_value("COLUMNS", "123");
 
-        let output = show_file_output(workspace.path(), "main.rs").expect("show file");
+        let output = show_file_output(workspace.path(), "main.rs", 512).expect("show file");
         assert!(output.contains("BAT:"));
         assert!(output.contains("--paging=never"));
         assert!(output.contains("--color=always"));
@@ -774,7 +774,8 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
 
-        let output = show_file_output(workspace.path(), "--hash README.md").expect("show file");
+        let output =
+            show_file_output(workspace.path(), "--hash README.md", 512).expect("show file");
         assert!(!output.contains("BAT:"));
         assert!(output.contains("alpha"));
         assert!(output.contains("beta"));
@@ -813,8 +814,8 @@ mod tests {
             .trim()
             .to_string();
 
-        let output =
-            show_file_output(workspace.path(), "--hash --author README.md").expect("show file");
+        let output = show_file_output(workspace.path(), "--hash --author README.md", 512)
+            .expect("show file");
         assert!(output.contains(&expected_hash));
         assert!(output.contains("Orangu Tests"));
         assert!(output.contains("1 "));

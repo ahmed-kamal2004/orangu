@@ -38,7 +38,7 @@ use orangu::{
     tools::ToolExecutor,
     tui::{
         ScreenRenderArgs, StatusFragment, render_screen, render_thinking_status,
-        render_tool_running_status, render_working_status,
+        render_tool_running_status, render_working_status, terminal_height, terminal_width,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -69,8 +69,8 @@ use git::{
 };
 use input::{
     EscapeCancelState, InputContext, InputResult, InputState, InterruptState, OutputState,
-    RenderContext, ScreenState, StreamRenderState, WaitContext, WaitResult, handle_input_event,
-    read_input,
+    RenderContext, ScreenState, StreamRenderState, ViewportState, WaitContext, WaitResult,
+    handle_input_event, read_input,
 };
 use render::{format_tools, render_markdown_for_console, show_file_output};
 
@@ -193,6 +193,9 @@ async fn run() -> Result<()> {
 
     let _terminal_ui_guard = TerminalUiGuard::new()?;
 
+    let vw = terminal_width();
+    let vh = terminal_height();
+    let mut viewport = ViewportState::new(config.width, vw, vh);
     let mut output_state = OutputState::default();
     let mut interrupt_state = InterruptState::default();
     let mut input_state = InputState::default();
@@ -252,6 +255,10 @@ async fn run() -> Result<()> {
             workspace: tools.workspace(),
             prompt_branch: prompt_branch.as_deref(),
             header_status,
+            virtual_width: viewport.virtual_width,
+            actual_width: viewport.actual_width,
+            actual_height: viewport.actual_height,
+            x_offset: viewport.x_offset,
         };
         let resume_left_status = startup_notice_until
             .filter(|&deadline| std::time::Instant::now() < deadline)
@@ -278,6 +285,7 @@ async fn run() -> Result<()> {
                 &mut interrupt_state,
                 &mut output_state,
                 pending_commands.len(),
+                &mut viewport,
                 InputContext {
                     history: &history,
                     workspace: &workspace,
@@ -342,6 +350,7 @@ async fn run() -> Result<()> {
                 workspace: &workspace,
                 usage_stats: &usage_stats,
                 http_client: status_http_client.clone(),
+                virtual_width: viewport.virtual_width,
             },
         )? {
             CommandOutcome::Quit => {
@@ -361,6 +370,11 @@ async fn run() -> Result<()> {
                 output_state.reset_scroll();
                 continue;
             }
+            CommandOutcome::WideOutput(output) => {
+                output_state.push_wide(&output);
+                output_state.reset_scroll();
+                continue;
+            }
             CommandOutcome::Blocking(f) => {
                 let handle = tokio::task::spawn_blocking(f);
                 // Recreate render here — handle_command's mutable borrows have ended.
@@ -370,6 +384,10 @@ async fn run() -> Result<()> {
                     workspace: tools.workspace(),
                     prompt_branch: prompt_branch.as_deref(),
                     header_status,
+                    virtual_width: viewport.virtual_width,
+                    actual_width: viewport.actual_width,
+                    actual_height: viewport.actual_height,
+                    x_offset: viewport.x_offset,
                 };
                 let result = wait_for_local_command(
                     WaitContext {
@@ -382,6 +400,7 @@ async fn run() -> Result<()> {
                         input_state: &mut input_state,
                         pending_commands: &mut pending_commands,
                         thinking_quote: None,
+                        viewport: &mut viewport,
                     },
                     handle,
                 )
@@ -401,6 +420,10 @@ async fn run() -> Result<()> {
                     workspace: tools.workspace(),
                     prompt_branch: prompt_branch.as_deref(),
                     header_status,
+                    virtual_width: viewport.virtual_width,
+                    actual_width: viewport.actual_width,
+                    actual_height: viewport.actual_height,
+                    x_offset: viewport.x_offset,
                 };
                 let result = wait_for_local_command(
                     WaitContext {
@@ -413,6 +436,7 @@ async fn run() -> Result<()> {
                         input_state: &mut input_state,
                         pending_commands: &mut pending_commands,
                         thinking_quote: None,
+                        viewport: &mut viewport,
                     },
                     handle,
                 )
@@ -465,6 +489,10 @@ async fn run() -> Result<()> {
                     workspace: tools.workspace(),
                     prompt_branch: prompt_branch.as_deref(),
                     header_status,
+                    virtual_width: viewport.virtual_width,
+                    actual_width: viewport.actual_width,
+                    actual_height: viewport.actual_height,
+                    x_offset: viewport.x_offset,
                 },
                 history: &mut history,
                 history_path: &session_hist_path,
@@ -474,6 +502,7 @@ async fn run() -> Result<()> {
                 input_state: &mut input_state,
                 pending_commands: &mut pending_commands,
                 thinking_quote,
+                viewport: &mut viewport,
             },
         )
         .await
@@ -676,6 +705,7 @@ fn handle_command(
         workspace,
         usage_stats,
         http_client,
+        virtual_width,
     } = context;
 
     match command {
@@ -748,10 +778,12 @@ fn handle_command(
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },
-        LocalCommand::ShowFile(args) => match show_file_output(workspace, args.as_ref()) {
-            Ok(output) => Ok(CommandOutcome::Output(output)),
-            Err(err) => Ok(local_command_error(err)),
-        },
+        LocalCommand::ShowFile(args) => {
+            match show_file_output(workspace, args.as_ref(), virtual_width) {
+                Ok(output) => Ok(CommandOutcome::WideOutput(output)),
+                Err(err) => Ok(local_command_error(err)),
+            }
+        }
         LocalCommand::Tools => Ok(CommandOutcome::Output(format_tools(tools))),
         LocalCommand::ModelInfo => Ok(CommandOutcome::Output(
             "Use /models to see configured profiles".to_string(),
@@ -930,6 +962,10 @@ pub fn print_screen(render: RenderContext<'_>, screen: ScreenState<'_>) {
             pending_line: screen.pending_line,
             input: screen.input,
             cursor: screen.cursor,
+            virtual_width: render.virtual_width,
+            actual_width: render.actual_width,
+            actual_height: render.actual_height,
+            x_offset: render.x_offset,
         })
     );
 }
@@ -942,7 +978,7 @@ async fn wait_for_response(
     wait_context: WaitContext<'_>,
 ) -> Result<WaitResult> {
     let WaitContext {
-        render,
+        mut render,
         history,
         history_path,
         model_names,
@@ -951,6 +987,7 @@ async fn wait_for_response(
         input_state,
         pending_commands,
         thinking_quote,
+        viewport,
     } = wait_context;
     let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
     let prompt_output = Arc::clone(&streamed_state);
@@ -1067,6 +1104,7 @@ async fn wait_for_response(
                         input_state,
                         interrupt_state,
                         output_state,
+                        viewport,
                         InputContext {
                             history,
                             workspace: render.workspace,
@@ -1074,6 +1112,9 @@ async fn wait_for_response(
                             render,
                         },
                     );
+                    render.actual_width = viewport.actual_width;
+                    render.actual_height = viewport.actual_height;
+                    render.x_offset = viewport.x_offset;
 
                     if let Some(outcome) = result.outcome {
                         match outcome {
@@ -1137,7 +1178,7 @@ async fn wait_for_local_command(
     mut handle: tokio::task::JoinHandle<anyhow::Result<String>>,
 ) -> anyhow::Result<anyhow::Result<String>> {
     let WaitContext {
-        render,
+        mut render,
         history,
         history_path: _,
         model_names,
@@ -1146,6 +1187,7 @@ async fn wait_for_local_command(
         input_state,
         pending_commands,
         thinking_quote: _,
+        viewport,
     } = wait_context;
     let started = std::time::Instant::now();
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
@@ -1167,6 +1209,7 @@ async fn wait_for_local_command(
                         input_state,
                         interrupt_state,
                         output_state,
+                        viewport,
                         InputContext {
                             history,
                             workspace: render.workspace,
@@ -1174,6 +1217,9 @@ async fn wait_for_local_command(
                             render,
                         },
                     );
+                    render.actual_width = viewport.actual_width;
+                    render.actual_height = viewport.actual_height;
+                    render.x_offset = viewport.x_offset;
                 }
                 let left_status = render_tool_running_status(frame, elapsed);
                 print_screen(
@@ -1835,9 +1881,9 @@ mod tests {
     };
     use super::{
         EscapeCancelState, InputContext, InputState, InterruptState, OutputState, RenderContext,
-        final_pending_line, handle_command, handle_input_event, is_wait_cancel_escape,
-        llm_prompt_block_reason, preserve_cancelled_output, render_left_status,
-        request_cancelled_message, resolve_workspace_root,
+        ViewportState, final_pending_line, handle_command, handle_input_event,
+        is_wait_cancel_escape, llm_prompt_block_reason, preserve_cancelled_output,
+        render_left_status, request_cancelled_message, resolve_workspace_root,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use orangu::{
@@ -1953,6 +1999,10 @@ mod tests {
                     server_ok: true,
                     model_ok: true,
                 },
+                virtual_width: 80,
+                actual_width: 80,
+                actual_height: 24,
+                x_offset: 0,
             },
         }
     }
@@ -2074,6 +2124,7 @@ mod tests {
                 workspace: workspace.path(),
                 usage_stats: &super::UsageStats::new(),
                 http_client: reqwest::Client::new(),
+                virtual_width: 512,
             },
         )
         .expect("handle command");
@@ -2091,6 +2142,7 @@ mod tests {
         input_state.set_buffer("src/tui.rs".to_string());
         let mut interrupt_state = InterruptState::default();
         let mut output_state = OutputState::default();
+        let mut viewport = ViewportState::new(80, 80, 24);
 
         let result = handle_input_event(
             Event::Key(KeyEvent::new_with_kind(
@@ -2101,6 +2153,7 @@ mod tests {
             &mut input_state,
             &mut interrupt_state,
             &mut output_state,
+            &mut viewport,
             test_input_context(workspace.path()),
         );
 
@@ -2118,6 +2171,7 @@ mod tests {
         input_state.move_home();
         let mut interrupt_state = InterruptState::default();
         let mut output_state = OutputState::default();
+        let mut viewport = ViewportState::new(80, 80, 24);
 
         let result = handle_input_event(
             Event::Key(KeyEvent::new_with_kind(
@@ -2128,6 +2182,7 @@ mod tests {
             &mut input_state,
             &mut interrupt_state,
             &mut output_state,
+            &mut viewport,
             test_input_context(workspace.path()),
         );
 
@@ -2144,6 +2199,7 @@ mod tests {
         input_state.set_buffer("src/tui.rs".to_string());
         let mut interrupt_state = InterruptState::default();
         let mut output_state = OutputState::default();
+        let mut viewport = ViewportState::new(80, 80, 24);
 
         let result = handle_input_event(
             Event::Key(KeyEvent::new_with_kind(
@@ -2154,6 +2210,7 @@ mod tests {
             &mut input_state,
             &mut interrupt_state,
             &mut output_state,
+            &mut viewport,
             test_input_context(workspace.path()),
         );
 
@@ -2170,6 +2227,7 @@ mod tests {
         input_state.move_home();
         let mut interrupt_state = InterruptState::default();
         let mut output_state = OutputState::default();
+        let mut viewport = ViewportState::new(80, 80, 24);
 
         let result = handle_input_event(
             Event::Key(KeyEvent::new_with_kind(
@@ -2180,6 +2238,7 @@ mod tests {
             &mut input_state,
             &mut interrupt_state,
             &mut output_state,
+            &mut viewport,
             test_input_context(workspace.path()),
         );
 
@@ -2241,6 +2300,7 @@ mod tests {
                     workspace: workspace.path(),
                     usage_stats: &super::UsageStats::new(),
                     http_client: reqwest::Client::new(),
+                    virtual_width: 512,
                 },
             )
             .expect("handle command");
@@ -2299,6 +2359,7 @@ mod tests {
                 workspace: workspace.path(),
                 usage_stats: &super::UsageStats::new(),
                 http_client: reqwest::Client::new(),
+                virtual_width: 512,
             },
         )
         .expect("handle command");
@@ -2574,6 +2635,7 @@ mod tests {
                 workspace: workspace.path(),
                 usage_stats: &super::UsageStats::new(),
                 http_client: reqwest::Client::new(),
+                virtual_width: 512,
             },
         )
         .expect("handle command");
@@ -2622,6 +2684,7 @@ mod tests {
                 workspace: workspace.path(),
                 usage_stats: &super::UsageStats::new(),
                 http_client: reqwest::Client::new(),
+                virtual_width: 512,
             },
         )
         .expect("command outcome");
@@ -2816,7 +2879,7 @@ mod tests {
         .expect("source file");
 
         let _path_guard = EnvVarGuard::set_value("PATH", "");
-        let output = show_file_output(workspace.path(), "main.rs").expect("show file");
+        let output = show_file_output(workspace.path(), "main.rs", 512).expect("show file");
         assert!(output.contains("1 "));
         assert!(output.contains("2 "));
         assert!(output.contains("\u{1b}["));
@@ -2880,8 +2943,8 @@ mod tests {
             .trim()
             .to_string();
 
-        let output =
-            show_file_output(workspace.path(), "--hash --author README.md").expect("show file");
+        let output = show_file_output(workspace.path(), "--hash --author README.md", 512)
+            .expect("show file");
         assert!(output.contains(&expected_hash));
         assert!(output.contains("Orangu Tests"));
         assert!(output.contains("1 "));
@@ -2912,7 +2975,7 @@ mod tests {
         let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
         let _columns_guard = EnvVarGuard::set_value("COLUMNS", "123");
 
-        let output = show_file_output(workspace.path(), "main.rs").expect("show file");
+        let output = show_file_output(workspace.path(), "main.rs", 512).expect("show file");
         assert!(output.contains("BAT:"));
         assert!(output.contains("--paging=never"));
         assert!(output.contains("--color=always"));
@@ -2961,7 +3024,8 @@ mod tests {
         );
         let _path_guard = EnvVarGuard::set_value("PATH", &path_value);
 
-        let output = show_file_output(workspace.path(), "--hash README.md").expect("show file");
+        let output =
+            show_file_output(workspace.path(), "--hash README.md", 512).expect("show file");
         assert!(!output.contains("BAT:"));
         assert!(output.contains("alpha"));
         assert!(output.contains("beta"));

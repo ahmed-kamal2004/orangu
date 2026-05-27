@@ -26,6 +26,7 @@ pub struct ClientAppConfiguration {
     pub default_model: String,
     pub llms: HashMap<String, LlmConfiguration>,
     pub quotes: String,
+    pub width: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,6 +52,12 @@ struct ClientConfiguration {
     system_prompt: String,
     #[serde(default)]
     quotes: String,
+    #[serde(default = "default_virtual_width")]
+    width: usize,
+}
+
+pub fn default_virtual_width() -> usize {
+    512
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +94,7 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
             root.client.system_prompt,
         )?,
         quotes: root.client.quotes,
+        width: root.client.width,
     })
 }
 

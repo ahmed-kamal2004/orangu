@@ -27,12 +27,13 @@ use terminal_size::{Height, Width, terminal_size};
 pub enum TranscriptLine {
     Plain(String),
     UserInput(String),
+    Wide(String),
 }
 
 impl TranscriptLine {
     pub fn as_str(&self) -> &str {
         match self {
-            TranscriptLine::Plain(s) | TranscriptLine::UserInput(s) => s,
+            TranscriptLine::Plain(s) | TranscriptLine::UserInput(s) | TranscriptLine::Wide(s) => s,
         }
     }
 }
@@ -184,6 +185,10 @@ pub struct ScreenRenderArgs<'a> {
     pub pending_line: Option<&'a str>,
     pub input: &'a str,
     pub cursor: usize,
+    pub virtual_width: usize,
+    pub actual_width: usize,
+    pub actual_height: usize,
+    pub x_offset: usize,
 }
 
 struct PromptFrameArgs<'a> {
@@ -194,8 +199,8 @@ struct PromptFrameArgs<'a> {
     prompt_prefix: &'a str,
     input: &'a str,
     cursor: usize,
-    width: usize,
     height: usize,
+    actual_width: usize,
 }
 
 pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
@@ -207,23 +212,40 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
         args.status,
     );
     let header_line_count = header.lines().count();
-    let width = terminal_width().max(1);
+    let width = args.virtual_width.max(1);
+    let actual_width = args.actual_width.max(1);
+    let actual_height = args.actual_height.max(1);
     let prompt_prefix = prompt_prefix(args.prompt_branch);
-    let input_lines = wrapped_input_lines(args.input, width, &prompt_prefix);
+    let input_lines = wrapped_input_lines(args.input, actual_width, &prompt_prefix);
     let prompt_frame_height = input_lines.len() + 3;
-    let height = terminal_height().max(header_line_count + prompt_frame_height + 1);
-    let available_output_rows =
-        available_output_rows(header_line_count, prompt_frame_height, height);
+
+    // Priority: prompt frame first, then banner, then output.
+    let rows_above_prompt = actual_height.saturating_sub(prompt_frame_height);
+    // Banner = header lines + 1 blank separator line; truncate to what fits.
+    let full_banner_height = header_line_count + 1;
+    let banner_rows = full_banner_height.min(rows_above_prompt);
+    let available_output_rows = available_output_rows(rows_above_prompt, banner_rows);
+
     let mut output_lines = args
         .transcript
         .iter()
-        .map(|line| render_transcript_line(line, width))
+        .map(|line| {
+            let (rendered, offset) = match line {
+                TranscriptLine::UserInput(_) => (render_transcript_line(line, actual_width), 0),
+                _ => (render_transcript_line(line, width), args.x_offset),
+            };
+            clip_line(&rendered, offset, actual_width)
+        })
         .collect::<Vec<_>>();
     if let Some(pending_line) = args.pending_line {
         if pending_line.is_empty() {
             output_lines.push(String::new());
         } else {
-            output_lines.extend(pending_line.lines().map(ToOwned::to_owned));
+            output_lines.extend(
+                pending_line
+                    .lines()
+                    .map(|l| clip_line(l, args.x_offset, actual_width)),
+            );
         }
     }
     let max_scroll_offset = output_lines.len().saturating_sub(available_output_rows);
@@ -233,26 +255,42 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
     let visible_lines = &output_lines[visible_start..visible_end];
 
     let mut screen = String::new();
-    screen.push_str(&header);
-    screen.push_str("\r\n\r\n");
+
+    // Banner — show as many header lines as fit; add blank separator only when full banner fits.
+    if banner_rows > 0 {
+        let shown_header_lines = banner_rows.min(header_line_count);
+        let banner_content = header
+            .split("\r\n")
+            .take(shown_header_lines)
+            .map(|l| clip_line(l, 0, actual_width))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        screen.push_str(&banner_content);
+        screen.push_str("\r\n");
+        if banner_rows > header_line_count {
+            screen.push_str("\r\n"); // blank separator line
+        }
+    }
+
     if !visible_lines.is_empty() {
         screen.push_str(&visible_lines.join("\r\n"));
         screen.push_str("\r\n");
     }
     screen.push_str(&render_prompt_frame(PromptFrameArgs {
-        header_height: header_line_count,
+        header_height: banner_rows,
         current_model: args.current_model,
         left_status: args.left_status,
         pending_count: args.pending_count,
         prompt_prefix: &prompt_prefix,
         input: args.input,
         cursor: args.cursor,
-        width,
-        height,
+        height: actual_height,
+        actual_width,
     }));
     screen
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn output_view_rows(
     version: &str,
     current_model: &str,
@@ -261,16 +299,17 @@ pub fn output_view_rows(
     prompt_branch: Option<&str>,
     status: HeaderStatus,
     input: &str,
+    actual_width: usize,
+    actual_height: usize,
 ) -> usize {
     let header = render_header(version, current_model, endpoint, workspace, status);
     let header_line_count = header.lines().count();
-    let width = terminal_width().max(1);
     let prompt_prefix = prompt_prefix(prompt_branch);
-    let input_lines = wrapped_input_lines(input, width, &prompt_prefix);
+    let input_lines = wrapped_input_lines(input, actual_width.max(1), &prompt_prefix);
     let prompt_frame_height = input_lines.len() + 3;
-    let height = terminal_height().max(header_line_count + prompt_frame_height + 1);
-
-    available_output_rows(header_line_count, prompt_frame_height, height)
+    let rows_above_prompt = actual_height.saturating_sub(prompt_frame_height);
+    let banner_rows = (header_line_count + 1).min(rows_above_prompt);
+    available_output_rows(rows_above_prompt, banner_rows)
 }
 
 pub fn render_thinking_status(frame: usize, elapsed: Duration) -> StatusFragment {
@@ -342,16 +381,8 @@ fn format_elapsed_timer(elapsed: Duration) -> String {
     }
 }
 
-fn available_output_rows(
-    header_line_count: usize,
-    prompt_frame_height: usize,
-    height: usize,
-) -> usize {
-    let output_start_row = header_line_count + 2;
-    height
-        .saturating_sub(prompt_frame_height)
-        .saturating_sub(output_start_row)
-        .saturating_add(1)
+fn available_output_rows(rows_above_prompt: usize, banner_rows: usize) -> usize {
+    rows_above_prompt.saturating_sub(banner_rows)
 }
 
 fn indicator(ok: bool) -> String {
@@ -383,47 +414,52 @@ fn status_indicator_line(text: &str, ok: bool) -> HeaderLine {
 }
 
 fn render_prompt_frame(args: PromptFrameArgs<'_>) -> String {
-    let input_lines = wrapped_input_lines(args.input, args.width, args.prompt_prefix);
+    let input_lines = wrapped_input_lines(args.input, args.actual_width, args.prompt_prefix);
     let input_height = input_lines.len();
     let height = args.height.max(args.header_height + input_height + 3);
     let top_row = (height.saturating_sub(input_height + 2)).max(args.header_height + 1);
     let input_start_row = top_row + 1;
     let bottom_row = input_start_row + input_height;
     let model_row = bottom_row + 1;
-    let line = "━".repeat(args.width);
+    let separator = "━".repeat(args.actual_width);
     let prompt_width = args.prompt_prefix.chars().count();
-    let mut frame = format!("\x1b[{top_row};1H{line}");
+    let mut frame = format!("\x1b[{top_row};1H{separator}");
 
     for (index, input_line) in input_lines.iter().enumerate() {
         let row = input_start_row + index;
-        let content = truncate_to_width(input_line, args.width.saturating_sub(prompt_width));
+        let content = truncate_to_width(input_line, args.actual_width.saturating_sub(prompt_width));
         let content_width = content.chars().count();
-        frame.push_str(&format!("\x1b[{row};1H{}{}", args.prompt_prefix, content));
-        if args.width > content_width + prompt_width {
-            frame.push_str(&" ".repeat(args.width - content_width - prompt_width));
+        let mut full_line = format!("{}{}", args.prompt_prefix, content);
+        if args.actual_width > content_width + prompt_width {
+            full_line.push_str(&" ".repeat(args.actual_width - content_width - prompt_width));
         }
+        frame.push_str(&format!("\x1b[{row};1H{full_line}"));
     }
 
-    let (cursor_row_offset, cursor_col_offset) =
-        cursor_position(args.input, args.cursor, args.width, args.prompt_prefix);
+    let (cursor_row_offset, cursor_col_offset) = cursor_position(
+        args.input,
+        args.cursor,
+        args.actual_width,
+        args.prompt_prefix,
+    );
     let cursor_row = input_start_row + cursor_row_offset;
-    let cursor_col = 1 + prompt_width + cursor_col_offset;
+    let display_cursor_col = (1 + prompt_width + cursor_col_offset).max(1);
 
     let status_line = render_status_line(
-        args.width,
+        args.actual_width,
         args.left_status.as_ref(),
         args.current_model,
         args.pending_count,
     );
     frame.push_str(&format!(
-        "\x1b[{bottom_row};1H{line}\x1b[{model_row};1H{status_line}\x1b[{cursor_row};{cursor_col}H"
+        "\x1b[{bottom_row};1H{separator}\x1b[{model_row};1H{status_line}\x1b[{cursor_row};{display_cursor_col}H"
     ));
     frame
 }
 
 fn render_transcript_line(line: &TranscriptLine, width: usize) -> String {
     match line {
-        TranscriptLine::Plain(content) => content.clone(),
+        TranscriptLine::Plain(content) | TranscriptLine::Wide(content) => content.clone(),
         TranscriptLine::UserInput(content) => {
             let padding = width.saturating_sub(content.chars().count());
             format!(
@@ -484,32 +520,47 @@ fn render_status_line(
     current_model: &str,
     pending_count: usize,
 ) -> String {
-    let mut cells = vec![' '; width];
-    if pending_count > 0 {
-        let pending = format!("Pending: {pending_count}");
-        let pending_width = pending.chars().count();
-        let pending_start = width.saturating_sub(pending_width) / 2;
-        for (index, ch) in pending.chars().enumerate() {
-            if pending_start + index < width {
-                cells[pending_start + index] = ch;
+    // Priority: left_status (Working/Thinking) > model name > Pending.
+    let left_visible_width = left_status.map_or(0, |s| s.visible_width);
+    let right_space = width.saturating_sub(left_visible_width);
+
+    let model_width = current_model.chars().count();
+    let show_model = right_space >= model_width;
+
+    let pending_text = (pending_count > 0).then(|| format!("Pending: {pending_count}"));
+    let pending_width = pending_text.as_ref().map_or(0, |s| s.chars().count());
+    // Gap is the space between the left status and the model name (or right edge if no model).
+    let gap = if show_model {
+        right_space.saturating_sub(model_width)
+    } else {
+        right_space
+    };
+    let show_pending = show_model && pending_text.is_some() && gap >= pending_width;
+
+    let mut right_cells = vec![' '; right_space];
+    if show_model {
+        let start = right_space - model_width;
+        for (i, ch) in current_model.chars().enumerate() {
+            if start + i < right_space {
+                right_cells[start + i] = ch;
+            }
+        }
+    }
+    if show_pending {
+        let pending = pending_text.as_deref().unwrap_or("");
+        let start = (gap - pending_width) / 2;
+        for (i, ch) in pending.chars().enumerate() {
+            if start + i < right_space {
+                right_cells[start + i] = ch;
             }
         }
     }
 
-    let model_width = current_model.chars().count();
-    let model_start = width.saturating_sub(model_width);
-    for (index, ch) in current_model.chars().enumerate() {
-        if model_start + index < width {
-            cells[model_start + index] = ch;
-        }
-    }
-
-    if let Some(left_status) = left_status.filter(|status| status.visible_width > 0) {
-        let left_width = left_status.visible_width.min(width);
-        let suffix: String = cells.into_iter().skip(left_width).collect();
-        format!("{}{}", left_status.rendered, suffix)
+    let right: String = right_cells.into_iter().collect();
+    if let Some(left) = left_status.filter(|s| s.visible_width > 0) {
+        format!("{}{}", left.rendered, right)
     } else {
-        cells.into_iter().collect()
+        right
     }
 }
 
@@ -531,7 +582,109 @@ fn truncate_to_width(input: &str, width: usize) -> String {
     input.chars().take(width).collect()
 }
 
-fn terminal_width() -> usize {
+pub fn clip_line(line: &str, x_offset: usize, visible_width: usize) -> String {
+    let mut result = String::new();
+    let mut col = 0usize;
+    let mut pre_clip_ansi = String::new();
+    let mut in_visible = false;
+    let mut truncated = false;
+    let mut chars = line.chars().peekable();
+
+    'outer: while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            let mut seq = String::from('\x1b');
+            match chars.peek() {
+                Some(&'[') => {
+                    seq.push(chars.next().unwrap());
+                    loop {
+                        match chars.next() {
+                            Some(c) => {
+                                let done = c.is_ascii_alphabetic() || c == '~' || c == '@';
+                                seq.push(c);
+                                if done {
+                                    break;
+                                }
+                            }
+                            None => break 'outer,
+                        }
+                    }
+                }
+                Some(&'O') => {
+                    seq.push(chars.next().unwrap());
+                    if let Some(c) = chars.next() {
+                        seq.push(c);
+                    }
+                }
+                _ => {}
+            }
+            if col < x_offset {
+                pre_clip_ansi.push_str(&seq);
+            } else {
+                result.push_str(&seq);
+            }
+            continue;
+        }
+
+        if col < x_offset {
+            col += 1;
+            continue;
+        }
+
+        let vis_col = col - x_offset;
+        if vis_col >= visible_width {
+            truncated = true;
+            break;
+        }
+
+        if !in_visible {
+            result.push_str(&pre_clip_ansi);
+            in_visible = true;
+        }
+
+        result.push(ch);
+        col += 1;
+    }
+
+    if truncated {
+        result.push_str("\x1b[0m");
+    }
+
+    result
+}
+
+pub fn visible_line_width(line: &str) -> usize {
+    let mut col = 0usize;
+    let mut chars = line.chars().peekable();
+    'outer: while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.peek() {
+                Some(&'[') => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some(c) => {
+                                if c.is_ascii_alphabetic() || c == '~' || c == '@' {
+                                    break;
+                                }
+                            }
+                            None => break 'outer,
+                        }
+                    }
+                }
+                Some(&'O') => {
+                    chars.next();
+                    chars.next();
+                }
+                _ => {}
+            }
+            continue;
+        }
+        col += 1;
+    }
+    col
+}
+
+pub fn terminal_width() -> usize {
     terminal_size()
         .map(|(Width(width), _)| usize::from(width))
         .filter(|width| *width > 0)
@@ -544,7 +697,7 @@ fn terminal_width() -> usize {
         .unwrap_or(80)
 }
 
-fn terminal_height() -> usize {
+pub fn terminal_height() -> usize {
     terminal_size()
         .map(|(_, Height(height))| usize::from(height))
         .filter(|height| *height > 0)
@@ -728,7 +881,9 @@ mod tests {
 
     #[test]
     fn available_output_rows_matches_current_layout_math() {
-        assert_eq!(available_output_rows(8, 4, 24), 11);
+        // header=8 lines, prompt_frame=4, height=24
+        // rows_above_prompt = 24-4 = 20, banner_rows = min(9, 20) = 9
+        assert_eq!(available_output_rows(20, 9), 11);
     }
 
     #[test]

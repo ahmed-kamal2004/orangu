@@ -16,7 +16,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use orangu::{
     llm::StreamMetrics,
-    tui::{HeaderStatus, StatusFragment, TranscriptLine},
+    tui::{HeaderStatus, StatusFragment, TranscriptLine, visible_line_width},
 };
 use std::{
     collections::VecDeque,
@@ -67,6 +67,54 @@ pub struct RenderContext<'a> {
     pub workspace: &'a Path,
     pub prompt_branch: Option<&'a str>,
     pub header_status: HeaderStatus,
+    pub virtual_width: usize,
+    pub actual_width: usize,
+    pub actual_height: usize,
+    pub x_offset: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewportState {
+    pub virtual_width: usize,
+    pub actual_width: usize,
+    pub actual_height: usize,
+    pub x_offset: usize,
+}
+
+impl ViewportState {
+    pub fn new(virtual_width: usize, actual_width: usize, actual_height: usize) -> Self {
+        Self {
+            virtual_width: virtual_width.max(actual_width),
+            actual_width,
+            actual_height,
+            x_offset: 0,
+        }
+    }
+
+    pub fn on_resize(&mut self, new_width: usize, new_height: usize) {
+        self.actual_width = new_width;
+        self.actual_height = new_height;
+        if new_width > self.virtual_width {
+            self.virtual_width = new_width;
+        }
+        self.clamp_offset();
+    }
+
+    pub fn pan_left(&mut self) {
+        self.x_offset = self.x_offset.saturating_sub(1);
+    }
+
+    pub fn pan_right(&mut self, max_content_width: usize) {
+        self.x_offset = self.x_offset.saturating_add(1);
+        let effective_right = max_content_width.min(self.virtual_width);
+        let max_offset = effective_right.saturating_sub(self.actual_width);
+        self.x_offset = self.x_offset.min(max_offset);
+    }
+
+    fn clamp_offset(&mut self) {
+        let max_offset = self.virtual_width.saturating_sub(self.actual_width);
+        self.x_offset = self.x_offset.min(max_offset);
+    }
 }
 
 #[derive(Clone)]
@@ -156,6 +204,7 @@ pub struct WaitContext<'a> {
     pub input_state: &'a mut InputState,
     pub pending_commands: &'a mut VecDeque<String>,
     pub thinking_quote: Option<&'static str>,
+    pub viewport: &'a mut ViewportState,
 }
 
 #[derive(Default)]
@@ -189,6 +238,13 @@ impl OutputState {
         );
     }
 
+    pub fn push_wide(&mut self, text: &str) {
+        self.push_lines(
+            text.lines()
+                .map(|line| TranscriptLine::Wide(line.to_owned())),
+        );
+    }
+
     pub fn push_input(&mut self, text: &str) {
         self.push_lines(
             text.lines()
@@ -216,6 +272,15 @@ impl OutputState {
 
     pub fn push_markdown(&mut self, text: &str) {
         self.push_text(&super::render::render_markdown_for_console(text));
+    }
+
+    pub fn max_content_width(&self) -> usize {
+        self.transcript
+            .iter()
+            .filter(|line| !matches!(line, TranscriptLine::UserInput(_)))
+            .map(|line| visible_line_width(line.as_str()))
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn page_up(&mut self, rows: usize) {
@@ -412,6 +477,7 @@ pub fn read_input(
     interrupt_state: &mut InterruptState,
     output_state: &mut OutputState,
     pending_count: usize,
+    viewport: &mut ViewportState,
     input_context: InputContext<'_>,
     print_screen_fn: impl Fn(RenderContext<'_>, ScreenState<'_>),
 ) -> anyhow::Result<InputResult> {
@@ -430,6 +496,7 @@ pub fn read_input(
             input_state,
             interrupt_state,
             output_state,
+            viewport,
             input_context,
         );
 
@@ -442,8 +509,15 @@ pub fn read_input(
         }
 
         if result.redraw {
+            let render = RenderContext {
+                virtual_width: viewport.virtual_width,
+                actual_width: viewport.actual_width,
+                actual_height: viewport.actual_height,
+                x_offset: viewport.x_offset,
+                ..input_context.render
+            };
             print_screen_fn(
-                input_context.render,
+                render,
                 ScreenState {
                     transcript: output_state.lines(),
                     scroll_offset: output_state.scroll_offset(),
@@ -464,11 +538,16 @@ pub fn handle_input_event(
     input_state: &mut InputState,
     interrupt_state: &mut InterruptState,
     output_state: &mut OutputState,
+    viewport: &mut ViewportState,
     input_context: InputContext<'_>,
 ) -> InputEventResult {
     let mut redraw = false;
 
     match event {
+        Event::Resize(w, h) => {
+            viewport.on_resize(usize::from(w), usize::from(h));
+            redraw = true;
+        }
         Event::Paste(text) => {
             interrupt_state.reset();
             output_state.reset_scroll();
@@ -559,6 +638,20 @@ pub fn handle_input_event(
                     input_state.delete();
                     redraw = true;
                 }
+                (KeyCode::Left, modifiers)
+                    if modifiers.contains(KeyModifiers::ALT)
+                        && !modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    viewport.pan_left();
+                    redraw = true;
+                }
+                (KeyCode::Right, modifiers)
+                    if modifiers.contains(KeyModifiers::ALT)
+                        && !modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    viewport.pan_right(output_state.max_content_width());
+                    redraw = true;
+                }
                 (KeyCode::Left, _) => {
                     interrupt_state.reset();
                     input_state.move_left();
@@ -633,6 +726,8 @@ pub fn handle_input_event(
                         input_context.render.prompt_branch,
                         input_context.render.header_status,
                         input_state.as_str(),
+                        input_context.render.actual_width,
+                        input_context.render.actual_height,
                     ));
                     redraw = true;
                 }
@@ -646,6 +741,8 @@ pub fn handle_input_event(
                         input_context.render.prompt_branch,
                         input_context.render.header_status,
                         input_state.as_str(),
+                        input_context.render.actual_width,
+                        input_context.render.actual_height,
                     ));
                     redraw = true;
                 }

@@ -24,6 +24,7 @@ max_tool_rounds = 10
 | `timeout` | No | Request timeout in seconds. Defaults to `1800` |
 | `max_tool_rounds` | No | Maximum tool-calling turns per prompt. Defaults to `10` |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `all` |
+| `width` | No | Virtual terminal width for the output canvas. Source lines from `/show_file` are laid out at this width and can be panned horizontally. Defaults to `512` |
 
 ## Model sections
 

@@ -325,6 +325,19 @@ Path-completion details:
 - The output scrollback buffer keeps the most recent 10,000 lines
 - Scrolling is limited to the output window; it does not replace the header or prompt area
 
+### Horizontal panning
+
+`orangu` maintains a virtual canvas that can be wider than the visible terminal. Source files shown with `/show_file` may contain lines longer than the terminal width; those lines are laid out on the full virtual canvas and can be panned horizontally without reflowing.
+
+- `Alt+Right` pans the output window right (reveals content that extends past the right edge)
+- `Alt+Left` pans the output window left (back toward the start of the line)
+
+The header, status bar, and input window always occupy the full visible terminal width and are not affected by panning.
+
+The virtual canvas width is set by the `width` key in the `[orangu]` config section (default `512`). When the terminal is resized to a width larger than the configured virtual width, the virtual width grows to match so that content is never clipped unexpectedly. The virtual width never shrinks below its initial value during a session.
+
+LLM and tool output is always wrapped or clipped to the visible terminal width and does not pan. Only `/show_file` output — where source lines must stay intact — uses the full virtual canvas.
+
 ### Waiting and exit control
 
 - `Esc` twice within 2 seconds cancels the active request without exiting and keeps queued commands

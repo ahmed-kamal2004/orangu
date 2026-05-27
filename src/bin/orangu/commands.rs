@@ -105,6 +105,7 @@ pub enum CommandOutcome {
     Unhandled,
     Quiet,
     Output(String),
+    WideOutput(String),
     Cleared,
     Quit,
     Blocking(Box<dyn FnOnce() -> anyhow::Result<String> + Send + 'static>),
@@ -157,6 +158,7 @@ pub struct CommandContext<'a> {
     pub workspace: &'a Path,
     pub usage_stats: &'a crate::UsageStats,
     pub http_client: reqwest::Client,
+    pub virtual_width: usize,
 }
 
 pub struct CommandState<'a> {
