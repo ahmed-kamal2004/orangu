@@ -169,6 +169,7 @@ All slash commands are handled locally. They are not sent to the model.
 | `/amend <message>` | Rewrite the last commit message |
 | `/checkout <branch\|file>` | Switch branch or restore a file |
 | `/cherry_pick <commit>` | Cherry-pick a commit onto the current branch |
+| `/comment <number> "<comment>"` | Add a comment to a GitHub issue with gh issue comment |
 | `/commit <message>` | Commit all tracked changes with git commit -a -m |
 | `/delete <branch>` | Delete a local branch |
 | `/diff [branch]` | Show a color unified diff; without a branch shows unstaged changes, with a branch shows changes since diverging from it |
@@ -207,6 +208,7 @@ Free-form prompts are blocked when the server or model status in the header is r
 - `/remove_file <path>` requires a Git repository and runs `git rm` (with `-r` for directories); Tab completion offers tracked directories first, then tracked files
 - `/move_file <source> <destination>` requires a Git repository and runs `git mv`; Tab completion for the first argument offers tracked directories first, then tracked files; Tab completion for the second argument offers workspace paths
 - `/cherry_pick <commit>` requires a Git repository and runs `git cherry-pick`; `gh` has no equivalent so it always uses plain Git; Tab completion offers abbreviated commit hashes from the default branch (`origin/main`, `origin/master`, `main`, or `master`)
+- `/comment <number> "<comment>"` requires a Git repository and the `gh` CLI, and runs `gh issue comment <number> --body <comment>` to add a comment to a GitHub issue; without `gh` installed it reports an error since there is no plain Git equivalent; the comment text may be bare (`/comment 51 My comment`) or quoted (`/comment 51 "My comment"`); the natural-language form `add comment on 51 "My comment"` is also handled
 - `/commit <message>` requires a Git repository and runs `git commit -a -m <message>`; `gh` has no equivalent so it always uses plain Git; the message may be bare (`/commit Fix the bug`) or quoted (`/commit "[#42] My feature"`)
 - `/amend <message>` requires a Git repository and runs `git commit --amend -m <message>`; `gh` has no equivalent so it always uses plain Git; the message is mandatory and may be bare (`/amend Fix the bug`) or quoted (`/amend "[#42] My feature"`)
 - `/push [--force]` requires a Git repository and runs `git push origin <branch>` using the current branch name; `gh` has no equivalent so it always uses plain Git; `--force` (or `-f` or `force`) runs `git push -f origin <branch>` but is blocked on `main` and `master` to prevent accidental history rewrites
@@ -233,6 +235,7 @@ Local commands can also be entered in plain language. Examples:
 - `show help`
 - `switch model to <name>`
 - `pull 58` or `pull request 58` or `pull #58`
+- `add comment on 51 "My comment"` or `comment on 51 "My comment"`
 - `log` or `show log` or `git log` or `git lg`
 - `status` or `show status` or `git status`
 - `rebase` or `git rebase`

@@ -131,6 +131,7 @@ pub enum LocalCommand<'a> {
     Status,
     Log,
     Pull(Option<u64>),
+    Comment(Option<(u64, Cow<'a, str>)>),
     Rebase,
     Merge(Option<Cow<'a, str>>),
     Checkout(Option<Cow<'a, str>>),
@@ -206,6 +207,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/merge" => Some(LocalCommand::Merge(None)),
         "/move_file" => Some(LocalCommand::MoveFile(None)),
         "/pull" => Some(LocalCommand::Pull(None)),
+        "/comment" => Some(LocalCommand::Comment(None)),
         "/push" => Some(LocalCommand::Push(false)),
         "/rebase" => Some(LocalCommand::Rebase),
         "/remove_file" => Some(LocalCommand::RemoveFile(None)),
@@ -250,6 +252,9 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/pull ") {
                 return Some(LocalCommand::Pull(args.trim().parse::<u64>().ok()));
+            }
+            if let Some(args) = input.strip_prefix("/comment ") {
+                return Some(LocalCommand::Comment(parse_comment_args(args.trim())));
             }
             if let Some(args) = input.strip_prefix("/merge ") {
                 let branch = args.trim();
@@ -449,6 +454,11 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     }
     if let Some(pr_number) = parse_pull_pr_number(input) {
         return Some(LocalCommand::Pull(Some(pr_number)));
+    }
+    for prefix in ["add comment on ", "add comment to ", "comment on "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            return Some(LocalCommand::Comment(parse_comment_args(rest.trim())));
+        }
     }
     if matches_ci(input, &["rebase", "git rebase"]) {
         return Some(LocalCommand::Rebase);
@@ -726,6 +736,17 @@ pub fn parse_pull_pr_number(input: &str) -> Option<u64> {
     None
 }
 
+pub fn parse_comment_args(input: &str) -> Option<(u64, Cow<'_, str>)> {
+    let input = input.trim();
+    let (number, rest) = input.split_once(char::is_whitespace)?;
+    let number = number.trim_start_matches('#').parse::<u64>().ok()?;
+    let body = strip_matching_quotes(rest.trim());
+    if body.is_empty() {
+        return None;
+    }
+    Some((number, Cow::Borrowed(body)))
+}
+
 pub fn strip_ascii_suffix<'a>(input: &'a str, suffix: &str) -> Option<&'a str> {
     if input.len() >= suffix.len()
         && input[input.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
@@ -813,6 +834,10 @@ pub fn connect_usage_message() -> &'static str {
 
 pub fn pull_usage_message() -> &'static str {
     "Usage: /pull <number>. Use /help to see available commands."
+}
+
+pub fn comment_usage_message() -> &'static str {
+    "Usage: /comment <number> \"<comment>\". Use /help to see available commands."
 }
 
 pub fn merge_usage_message() -> &'static str {
@@ -1020,6 +1045,46 @@ mod tests {
         assert!(matches!(
             parse_local_command("pull #58"),
             Some(LocalCommand::Pull(Some(58)))
+        ));
+    }
+
+    #[test]
+    fn parses_comment_commands() {
+        assert!(matches!(
+            parse_local_command("/comment 51 \"My comment\""),
+            Some(LocalCommand::Comment(Some((51, ref body)))) if body == "My comment"
+        ));
+        assert!(matches!(
+            parse_local_command("/comment 51 My comment"),
+            Some(LocalCommand::Comment(Some((51, ref body)))) if body == "My comment"
+        ));
+        assert!(matches!(
+            parse_local_command("/comment #51 \"My comment\""),
+            Some(LocalCommand::Comment(Some((51, ref body)))) if body == "My comment"
+        ));
+        assert!(matches!(
+            parse_local_command("Add comment on 51 \"My comment\""),
+            Some(LocalCommand::Comment(Some((51, ref body)))) if body == "My comment"
+        ));
+        assert!(matches!(
+            parse_local_command("comment on 51 \"My comment\""),
+            Some(LocalCommand::Comment(Some((51, ref body)))) if body == "My comment"
+        ));
+        assert!(matches!(
+            parse_local_command("/comment"),
+            Some(LocalCommand::Comment(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/comment 51"),
+            Some(LocalCommand::Comment(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/comment 51 \"\""),
+            Some(LocalCommand::Comment(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/comment notanumber \"My comment\""),
+            Some(LocalCommand::Comment(None))
         ));
     }
 

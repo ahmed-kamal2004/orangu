@@ -37,6 +37,7 @@ pub const COMMANDS: &[&str] = &[
     "/status",
     "/log",
     "/pull",
+    "/comment",
     "/rebase",
     "/merge",
     "/checkout",

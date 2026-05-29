@@ -731,6 +731,45 @@ pub fn git_pr_checkout(repo_root: &Path, pr_number: u64) -> Result<String> {
     })
 }
 
+pub fn comment_output(workspace: &Path, issue_number: u64, body: &str) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("comment is only available inside a Git repository"))?;
+    let output = match std::process::Command::new("gh")
+        .args([
+            "issue",
+            "comment",
+            &issue_number.to_string(),
+            "--body",
+            body,
+        ])
+        .current_dir(&repo_root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow!("comment requires the gh CLI to be installed"));
+        }
+        Err(err) => return Err(err).context("failed to run gh"),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "gh issue comment failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Added comment on issue #{issue_number}")
+    } else {
+        stdout
+    })
+}
+
 pub fn rebase_output(workspace: &Path) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("rebase is only available inside a Git repository"))?;

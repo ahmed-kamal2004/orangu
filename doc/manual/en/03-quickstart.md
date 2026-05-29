@@ -69,6 +69,7 @@ Then start with:
 /amend "[#42] My feature"
 /checkout main
 /cherry_pick abc1234
+/comment 51 "My comment"
 /commit "[#42] My feature"
 /delete feature/foo
 /diff

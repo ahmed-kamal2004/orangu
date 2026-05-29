@@ -52,6 +52,7 @@ orangu --config ./orangu.conf
 - `/amend <message>`
 - `/checkout main`
 - `/cherry_pick <commit>`
+- `/comment 51 "My comment"`
 - `/commit <message>`
 - `/delete feature/foo`
 - `/diff`

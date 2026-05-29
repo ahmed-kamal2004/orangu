@@ -187,6 +187,7 @@ pub fn help_text() -> &'static str {
 /amend <message>                              Rewrite the last commit message with git commit --amend
 /checkout <branch|file>                       Switch branch or restore a file
 /cherry_pick <commit>                         Cherry-pick a commit onto the current branch
+/comment <number> "<comment>"                 Add a comment to a GitHub issue with gh issue comment
 /commit <message>                             Commit all tracked changes with git commit -a -m
 /delete <branch>                              Delete a local branch with git branch -D
 /diff                                         Show a color unified diff against the current branch
@@ -204,7 +205,7 @@ pub fn help_text() -> &'static str {
 /clear                                        Clear the current conversation
 /quit                                         Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `init repo`, `delete feature/foo`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `checkout main`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `init repo`, `delete feature/foo`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion.
 

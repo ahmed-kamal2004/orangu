@@ -56,17 +56,17 @@ use uuid::Uuid;
 use anyhow::Error;
 use commands::{
     CommandContext, CommandOutcome, CommandState, LocalCommand, LocalError, add_file_usage_message,
-    amend_usage_message, checkout_usage_message, cherry_pick_usage_message, commit_usage_message,
-    connect_usage_message, delete_branch_usage_message, merge_usage_message, model_usage_message,
-    move_file_usage_message, open_file_usage_message, parse_local_command, pull_usage_message,
-    remove_file_usage_message, sorted_model_names, system_prompt,
+    amend_usage_message, checkout_usage_message, cherry_pick_usage_message, comment_usage_message,
+    commit_usage_message, connect_usage_message, delete_branch_usage_message, merge_usage_message,
+    model_usage_message, move_file_usage_message, open_file_usage_message, parse_local_command,
+    pull_usage_message, remove_file_usage_message, sorted_model_names, system_prompt,
 };
 use git::{
-    add_file_output, amend_output, checkout_output, cherry_pick_output, commit_output,
-    delete_branch_output, git_diff_against_branch, git_workspace_diff, init_repo_output,
-    list_workspace_files_tree, log_output, merge_output, move_file_output, open_in_editor,
-    pull_request_output, push_output, rebase_output, remove_file_output, squash_output,
-    status_output, workspace_branch_name,
+    add_file_output, amend_output, checkout_output, cherry_pick_output, comment_output,
+    commit_output, delete_branch_output, git_diff_against_branch, git_workspace_diff,
+    init_repo_output, list_workspace_files_tree, log_output, merge_output, move_file_output,
+    open_in_editor, pull_request_output, push_output, rebase_output, remove_file_output,
+    squash_output, status_output, workspace_branch_name,
 };
 use input::{
     EscapeCancelState, InputContext, InputResult, InputState, InterruptState, OutputState,
@@ -896,6 +896,15 @@ fn handle_command(
             Ok(_) => Ok(CommandOutcome::Quiet),
             Err(err) => Ok(local_command_error(err)),
         },
+        LocalCommand::Comment(None) => Ok(CommandOutcome::OutputError(
+            comment_usage_message().to_string(),
+        )),
+        LocalCommand::Comment(Some((issue_number, body))) => {
+            match comment_output(workspace, issue_number, &body) {
+                Ok(_) => Ok(CommandOutcome::Quiet),
+                Err(err) => Ok(local_command_error(err)),
+            }
+        }
         LocalCommand::Rebase => match rebase_output(workspace) {
             Ok(_) => Ok(CommandOutcome::Quiet),
             Err(err) => Ok(local_command_error(err)),
