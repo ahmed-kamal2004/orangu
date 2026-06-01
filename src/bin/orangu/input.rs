@@ -478,6 +478,7 @@ pub fn idle_status_refresh_timeout(refresh_deadline: Instant, now: Instant) -> D
         .unwrap_or(Duration::ZERO)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn read_input(
     input_state: &mut InputState,
     interrupt_state: &mut InterruptState,
@@ -486,10 +487,11 @@ pub fn read_input(
     viewport: &mut ViewportState,
     input_context: InputContext<'_>,
     print_screen_fn: impl Fn(RenderContext<'_>, ScreenState<'_>),
+    max_idle: Duration,
 ) -> anyhow::Result<InputResult> {
     use crossterm::event;
 
-    let refresh_deadline = Instant::now() + IDLE_STATUS_REFRESH_INTERVAL;
+    let refresh_deadline = Instant::now() + max_idle;
 
     loop {
         let timeout = idle_status_refresh_timeout(refresh_deadline, Instant::now());

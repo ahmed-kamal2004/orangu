@@ -1107,6 +1107,123 @@ pub fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
     })
 }
 
+/// Determine the repository's default branch name (e.g. `main`), preferring
+/// `gh`, then `origin/HEAD`, then the first of `main`/`master` present on origin.
+fn git_default_branch(repo_root: &Path) -> Option<String> {
+    if let Ok(output) = std::process::Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "defaultBranchRef",
+            "--jq",
+            ".defaultBranchRef.name",
+        ])
+        .current_dir(repo_root)
+        .output()
+        && output.status.success()
+    {
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+        .output()
+        && output.status.success()
+    {
+        let name = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_start_matches("origin/")
+            .to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+
+    for branch in ["main", "master"] {
+        if let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["ls-remote", "--heads", "origin", branch])
+            .output()
+            && output.status.success()
+            && !output.stdout.is_empty()
+        {
+            return Some(branch.to_string());
+        }
+    }
+
+    None
+}
+
+/// Fast-forward the local default branch (main/master) to match `origin`,
+/// without ever creating a merge commit, rebasing, or touching a feature
+/// branch's working tree. Returns `Ok(None)` when there is nothing to do (no
+/// `origin` remote or no detectable default branch), `Ok(Some(msg))` on a
+/// successful sync, and `Err` if a sync was attempted but failed.
+pub fn sync_default_branch(workspace: &Path) -> Result<Option<String>> {
+    let Some(repo_root) = discover_git_root(workspace) else {
+        return Ok(None);
+    };
+
+    // Nothing to sync without an `origin` remote.
+    let remotes = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_root)
+        .arg("remote")
+        .output()
+        .context("failed to run git remote")?;
+    if !remotes.status.success()
+        || !String::from_utf8_lossy(&remotes.stdout)
+            .lines()
+            .any(|remote| remote.trim() == "origin")
+    {
+        return Ok(None);
+    }
+
+    let Some(default) = git_default_branch(&repo_root) else {
+        return Ok(None);
+    };
+
+    let on_default = workspace_branch_name(&repo_root).as_deref() == Some(default.as_str());
+    let output = if on_default {
+        // On the default branch: fast-forward the working tree.
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["pull", "--ff-only", "origin", &default])
+            .output()
+            .context("failed to run git pull")?
+    } else {
+        // On another branch: fast-forward the local default ref in place.
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["fetch", "origin", &format!("{default}:{default}")])
+            .output()
+            .context("failed to run git fetch")?
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "{}",
+            if stderr.is_empty() {
+                format!("could not sync {default}")
+            } else {
+                stderr
+            }
+        ));
+    }
+
+    Ok(Some(format!("Synced {default} with origin")))
+}
+
 pub fn merge_output(workspace: &Path, branch: &str) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("merge is only available inside a Git repository"))?;
@@ -2293,5 +2410,107 @@ mod tests {
                 file.lines[0]
             );
         }
+    }
+
+    fn git_run(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    fn rev_count(dir: &Path, rev: &str) -> usize {
+        let output = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["rev-list", "--count", rev])
+            .output()
+            .expect("git rev-list");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn sync_default_branch_fast_forwards_local_main() {
+        let _env_lock = process_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let home = tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set_path("HOME", home.path());
+
+        // A bare "origin" plus an author clone that pushes commits to it.
+        let origin = tempdir().expect("origin");
+        git_run(origin.path(), &["init", "--bare", "-b", "main"]);
+
+        let author = tempdir().expect("author");
+        git_run(author.path(), &["init", "-b", "main"]);
+        git_run(author.path(), &["config", "user.name", "Author"]);
+        git_run(
+            author.path(),
+            &["config", "user.email", "author@example.com"],
+        );
+        git_run(
+            author.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+        std::fs::write(author.path().join("f.txt"), "1\n").expect("write");
+        git_run(author.path(), &["add", "."]);
+        git_run(author.path(), &["commit", "-m", "base"]);
+        git_run(author.path(), &["push", "-u", "origin", "main"]);
+
+        // The consumer clones origin and sits on main.
+        let consumer = tempdir().expect("consumer");
+        git_run(
+            home.path(),
+            &[
+                "clone",
+                origin.path().to_str().unwrap(),
+                consumer.path().to_str().unwrap(),
+            ],
+        );
+        git_run(consumer.path(), &["config", "user.name", "Consumer"]);
+        git_run(
+            consumer.path(),
+            &["config", "user.email", "consumer@example.com"],
+        );
+        assert_eq!(rev_count(consumer.path(), "HEAD"), 1);
+
+        // Author advances main on origin.
+        std::fs::write(author.path().join("f.txt"), "2\n").expect("write");
+        git_run(author.path(), &["commit", "-am", "second"]);
+        git_run(author.path(), &["push", "origin", "main"]);
+
+        // On main, sync fast-forwards the working tree.
+        let message = sync_default_branch(consumer.path()).expect("sync");
+        assert_eq!(message.as_deref(), Some("Synced main with origin"));
+        assert_eq!(rev_count(consumer.path(), "HEAD"), 2);
+
+        // On a feature branch, sync still fast-forwards the local main ref.
+        git_run(consumer.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(author.path().join("f.txt"), "3\n").expect("write");
+        git_run(author.path(), &["commit", "-am", "third"]);
+        git_run(author.path(), &["push", "origin", "main"]);
+
+        sync_default_branch(consumer.path()).expect("sync on feature");
+        assert_eq!(rev_count(consumer.path(), "main"), 3);
+        assert_eq!(
+            workspace_branch_name(consumer.path()).as_deref(),
+            Some("feature"),
+            "current branch is untouched",
+        );
+    }
+
+    #[test]
+    fn sync_default_branch_without_origin_is_a_no_op() {
+        let _env_lock = process_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let workspace = tempdir().expect("workspace");
+        let home = tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set_path("HOME", home.path());
+        init_git_for_test(workspace.path());
+
+        // No origin remote configured ⇒ nothing to sync, no error.
+        assert_eq!(sync_default_branch(workspace.path()).unwrap(), None);
     }
 }

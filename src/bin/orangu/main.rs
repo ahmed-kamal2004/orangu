@@ -66,14 +66,15 @@ use commands::{
 use git::{
     add_file_output, amend_output, checkout_output, cherry_pick_output, collect_review_diff,
     comment_output, commit_output, create_pull_request_output, delete_branch_output,
-    git_diff_against_branch, git_workspace_diff, init_repo_output, list_workspace_files_tree,
-    log_output, merge_output, move_file_output, open_in_editor, pull_request_output, push_output,
-    rebase_output, remove_file_output, squash_output, status_output, workspace_branch_name,
+    discover_git_root, git_diff_against_branch, git_workspace_diff, init_repo_output,
+    list_workspace_files_tree, log_output, merge_output, move_file_output, open_in_editor,
+    pull_request_output, push_output, rebase_output, remove_file_output, squash_output,
+    status_output, sync_default_branch, workspace_branch_name,
 };
 use input::{
-    EscapeCancelState, InputContext, InputResult, InputState, InterruptState, OutputState,
-    RenderContext, ScreenState, StreamRenderState, ViewportState, WaitContext, WaitResult,
-    handle_input_event, read_input,
+    EscapeCancelState, IDLE_STATUS_REFRESH_INTERVAL, InputContext, InputResult, InputState,
+    InterruptState, OutputState, RenderContext, ScreenState, StreamRenderState, ViewportState,
+    WaitContext, WaitResult, handle_input_event, read_input,
 };
 use render::{format_tools, render_markdown_for_console, show_file_output};
 
@@ -238,6 +239,15 @@ async fn run() -> Result<()> {
         output_state.push_text(&format!("Switched model from {old_model} to {new_model}"));
     }
 
+    // In a Git repository, fast-forward the local default branch to origin on
+    // startup. Run it in the background so it never blocks the UI; its progress
+    // and result are shown on the left of the status bar.
+    let mut sync_handle = discover_git_root(tools.workspace()).map(|_| {
+        let sync_workspace = tools.workspace().to_path_buf();
+        tokio::task::spawn_blocking(move || sync_default_branch(&sync_workspace))
+    });
+    let mut sync_notice: Option<(String, std::time::Instant)> = None;
+
     loop {
         let prompt_branch = workspace_branch_name(tools.workspace());
         let active_profile = config
@@ -265,15 +275,45 @@ async fn run() -> Result<()> {
             banner: config.banner,
             feedback: config.feedback,
         };
+        // Collect the startup branch-sync result once its task finishes.
+        if sync_handle
+            .as_ref()
+            .is_some_and(|handle| handle.is_finished())
+            && let Some(handle) = sync_handle.take()
+        {
+            let notice = match handle.await {
+                Ok(Ok(Some(message))) => Some(message),
+                Ok(Err(err)) => Some(format!("Sync failed: {err}")),
+                _ => None,
+            };
+            if let Some(message) = notice {
+                sync_notice = Some((
+                    message,
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                ));
+            }
+        }
+
         let resume_left_status = startup_notice_until
             .filter(|&deadline| std::time::Instant::now() < deadline)
             .map(|_| StatusFragment::plain(format!("Resuming session {session_id}")));
+        // The branch sync takes priority on the left of the status bar while it
+        // runs and for a few seconds after it completes.
+        let left_status = if sync_handle.is_some() {
+            Some(StatusFragment::plain("Syncing with origin…".to_string()))
+        } else {
+            sync_notice
+                .as_ref()
+                .filter(|(_, deadline)| std::time::Instant::now() < *deadline)
+                .map(|(message, _)| StatusFragment::plain(message.clone()))
+                .or(resume_left_status)
+        };
         print_screen(
             render,
             ScreenState {
                 transcript: output_state.lines(),
                 scroll_offset: output_state.scroll_offset(),
-                left_status: resume_left_status,
+                left_status,
                 pending_count: pending_commands.len(),
                 pending_line: None,
                 input: input_state.as_str(),
@@ -281,6 +321,18 @@ async fn run() -> Result<()> {
             },
         );
         std::io::stdout().flush()?;
+
+        // While the startup sync is running or its result is still on the status
+        // bar, refresh more often so the status clears promptly when it is done.
+        let sync_active = sync_handle.is_some()
+            || sync_notice
+                .as_ref()
+                .is_some_and(|(_, deadline)| std::time::Instant::now() < *deadline);
+        let max_idle = if sync_active {
+            std::time::Duration::from_millis(500)
+        } else {
+            IDLE_STATUS_REFRESH_INTERVAL
+        };
 
         let next_input = if let Some(queued) = pending_commands.pop_front() {
             queued
@@ -298,6 +350,7 @@ async fn run() -> Result<()> {
                     render,
                 },
                 print_screen,
+                max_idle,
             )? {
                 InputResult::Submitted(line) => {
                     let Some(trimmed) = prepare_submitted_input(

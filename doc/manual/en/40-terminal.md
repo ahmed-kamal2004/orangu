@@ -4,6 +4,12 @@
 
 `orangu` is an interactive terminal client with a persistent header and a prompt area anchored to the bottom of the terminal.
 
+## Startup
+
+When started inside a Git repository, **orangu** fast-forwards the local default branch (`main`/`master`) to `origin` so it is in sync with upstream. If you are on the default branch it fast-forwards your working tree (`git pull --ff-only`); on any other branch it fast-forwards the local default ref in place (`git fetch origin <branch>:<branch>`) without touching your current branch or working tree. It never creates a merge commit or rebases.
+
+The sync runs in the background so it never delays startup. Its progress and result appear on the left of the status bar — `Syncing with origin…` while it runs, then `Synced <branch> with origin` (or `Sync failed: …`) for a few seconds. It is skipped silently when there is no `origin` remote, and a diverged branch or an unreachable `origin` is reported only on the status bar; startup continues normally regardless.
+
 ## Header
 
 The top banner displays:
