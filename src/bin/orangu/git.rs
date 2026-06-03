@@ -1292,15 +1292,15 @@ fn git_default_branch(repo_root: &Path, forge: Forge) -> Option<String> {
     if forge == Forge::GitHub
         && let Ok(output) = std::process::Command::new("gh")
             .args([
-            "repo",
-            "view",
-            "--json",
-            "defaultBranchRef",
-            "--jq",
-            ".defaultBranchRef.name",
-        ])
-        .current_dir(repo_root)
-        .output()
+                "repo",
+                "view",
+                "--json",
+                "defaultBranchRef",
+                "--jq",
+                ".defaultBranchRef.name",
+            ])
+            .current_dir(repo_root)
+            .output()
         && output.status.success()
     {
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -2811,7 +2811,10 @@ mod tests {
         init_git_for_test(workspace.path());
 
         // No origin remote configured ⇒ nothing to sync, no error.
-        assert_eq!(sync_default_branch(workspace.path(), Forge::GitHub).unwrap(), None);
+        assert_eq!(
+            sync_default_branch(workspace.path(), Forge::GitHub).unwrap(),
+            None
+        );
     }
 
     #[test]

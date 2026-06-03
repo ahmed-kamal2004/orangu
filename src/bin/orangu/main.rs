@@ -1113,11 +1113,12 @@ fn handle_command(
         LocalCommand::Pull(None) => Ok(CommandOutcome::OutputError(
             pull_usage_message().to_string(),
         )),
-        LocalCommand::Pull(Some(pr_number)) => match pull_request_output(workspace, pr_number, forge)
-        {
-            Ok(_) => Ok(CommandOutcome::Quiet),
-            Err(err) => Ok(local_command_error(err)),
-        },
+        LocalCommand::Pull(Some(pr_number)) => {
+            match pull_request_output(workspace, pr_number, forge) {
+                Ok(_) => Ok(CommandOutcome::Quiet),
+                Err(err) => Ok(local_command_error(err)),
+            }
+        }
         LocalCommand::Comment(None) => Ok(CommandOutcome::OutputError(
             comment_usage_message().to_string(),
         )),
