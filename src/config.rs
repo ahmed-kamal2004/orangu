@@ -34,6 +34,7 @@ pub struct ClientAppConfiguration {
     pub feedback: bool,
     pub auto_rebase: bool,
     pub auto_squash: bool,
+    pub terminal: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -97,6 +98,7 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
         auto_squash: parse_feedback_bool(
             client.get("auto_squash").map(String::as_str).unwrap_or(""),
         ),
+        terminal: client.get("terminal").cloned().unwrap_or_default(),
     })
 }
 

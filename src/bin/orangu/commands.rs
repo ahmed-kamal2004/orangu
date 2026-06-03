@@ -177,6 +177,7 @@ pub struct CommandContext<'a> {
     pub virtual_width: usize,
     pub auto_rebase: bool,
     pub auto_squash: bool,
+    pub terminal: &'a str,
 }
 
 pub struct CommandState<'a> {

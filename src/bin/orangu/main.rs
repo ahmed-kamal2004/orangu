@@ -411,6 +411,7 @@ async fn run() -> Result<()> {
                 virtual_width: viewport.virtual_width,
                 auto_rebase: config.auto_rebase,
                 auto_squash: config.auto_squash,
+                terminal: &config.terminal,
             },
         )? {
             CommandOutcome::Quit => {
@@ -964,6 +965,7 @@ fn handle_command(
         virtual_width,
         auto_rebase,
         auto_squash,
+        terminal,
     } = context;
 
     match command {
@@ -1212,7 +1214,7 @@ fn handle_command(
                     open_file_usage_message().to_string(),
                 ));
             }
-            match open_in_editor(workspace, path) {
+            match open_in_editor(workspace, path, terminal) {
                 Ok(()) => Ok(CommandOutcome::Quiet),
                 Err(err) => Ok(CommandOutcome::OutputError(format!("Error: {err:#}"))),
             }
@@ -3498,6 +3500,7 @@ mod tests {
                 virtual_width: 512,
                 auto_rebase: false,
                 auto_squash: false,
+                terminal: "",
             },
         )
         .expect("handle command");
@@ -3676,6 +3679,7 @@ mod tests {
                     virtual_width: 512,
                     auto_rebase: false,
                     auto_squash: false,
+                    terminal: "",
                 },
             )
             .expect("handle command");
@@ -3737,6 +3741,7 @@ mod tests {
                 virtual_width: 512,
                 auto_rebase: false,
                 auto_squash: false,
+                terminal: "",
             },
         )
         .expect("handle command");
@@ -4022,6 +4027,7 @@ mod tests {
                 virtual_width: 512,
                 auto_rebase: false,
                 auto_squash: false,
+                terminal: "",
             },
         )
         .expect("handle command");
@@ -4073,6 +4079,7 @@ mod tests {
                 virtual_width: 512,
                 auto_rebase: false,
                 auto_squash: false,
+                terminal: "",
             },
         )
         .expect("command outcome");
