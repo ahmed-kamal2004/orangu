@@ -15,33 +15,29 @@
 
 use anyhow::{Context, Result, anyhow};
 use std::{
-    fmt::Write as _,
+    io::{BufRead, BufReader, Read},
     path::Path,
-    process::{Command, Output},
+    process::{Command, Stdio},
+    thread,
 };
+use tokio::sync::mpsc::UnboundedSender;
 
-pub fn build_output(workspace: &Path) -> Result<String> {
+/// Sink for streaming build output. Each sent string is one line that the
+/// caller appends to the output window as soon as it arrives.
+pub type BuildSink = UnboundedSender<String>;
+
+pub fn build_output(workspace: &Path, sink: &BuildSink) -> Result<()> {
     if workspace.join("Cargo.toml").exists() {
-        rust_build(workspace)
+        rust_build(workspace, sink)
     } else if workspace.join("CMakeLists.txt").exists() {
-        c_build(workspace)
+        c_build(workspace, sink)
     } else if workspace.join("pom.xml").exists() {
-        java_build(workspace)
+        java_build(workspace, sink)
     } else {
         Err(anyhow!(
             "no supported project found (expected Cargo.toml, CMakeLists.txt, or pom.xml)"
         ))
     }
-}
-
-fn combined_output(output: &Output) -> String {
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    [stdout, stderr]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn make_cmd(program: &str, args: &[&str], cwd: &Path) -> Command {
@@ -51,56 +47,87 @@ fn make_cmd(program: &str, args: &[&str], cwd: &Path) -> Command {
     cmd
 }
 
-struct BuildSteps {
-    buf: String,
+/// Forward every line from a child pipe to the sink as it is produced.
+fn stream_pipe<R: Read>(pipe: R, sink: &BuildSink) {
+    let reader = BufReader::new(pipe);
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                if sink.send(line).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
-impl BuildSteps {
-    fn new() -> Self {
-        Self { buf: String::new() }
+struct BuildSteps<'a> {
+    sink: &'a BuildSink,
+    first: bool,
+}
+
+impl<'a> BuildSteps<'a> {
+    fn new(sink: &'a BuildSink) -> Self {
+        Self { sink, first: true }
+    }
+
+    fn emit(&self, line: impl Into<String>) {
+        let _ = self.sink.send(line.into());
     }
 
     fn run(&mut self, label: &str, mut command: Command) -> Result<()> {
-        let output = command
-            .output()
-            .with_context(|| format!("failed to run {label}"))?;
-        let detail = combined_output(&output);
-        if !self.buf.is_empty() {
-            self.buf.push('\n');
+        if !self.first {
+            self.emit("");
         }
-        if output.status.success() {
-            if detail.is_empty() {
-                let _ = write!(self.buf, "{label}: ok");
-            } else {
-                let _ = write!(self.buf, "{label}:\n{detail}");
-            }
+        self.first = false;
+        self.emit(format!("{label}:"));
+
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("failed to run {label}"))?;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let out_handle = stdout.map(|pipe| {
+            let sink = self.sink.clone();
+            thread::spawn(move || stream_pipe(pipe, &sink))
+        });
+        let err_handle = stderr.map(|pipe| {
+            let sink = self.sink.clone();
+            thread::spawn(move || stream_pipe(pipe, &sink))
+        });
+        if let Some(handle) = out_handle {
+            let _ = handle.join();
+        }
+        if let Some(handle) = err_handle {
+            let _ = handle.join();
+        }
+
+        let status = child
+            .wait()
+            .with_context(|| format!("failed to wait for {label}"))?;
+        if status.success() {
             Ok(())
         } else {
-            if detail.is_empty() {
-                let _ = write!(self.buf, "{label}: failed");
-            } else {
-                let _ = write!(self.buf, "{label}:\n{detail}");
-            }
-            Err(anyhow!("{}", self.buf))
+            Err(anyhow!("{label} failed"))
         }
-    }
-
-    fn finish(self) -> String {
-        self.buf
     }
 }
 
-fn rust_build(workspace: &Path) -> Result<String> {
-    let mut steps = BuildSteps::new();
+fn rust_build(workspace: &Path, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
     steps.run("cargo fmt", make_cmd("cargo", &["fmt"], workspace))?;
     steps.run("cargo clippy", make_cmd("cargo", &["clippy"], workspace))?;
     steps.run("cargo build", make_cmd("cargo", &["build"], workspace))?;
     steps.run("cargo test", make_cmd("cargo", &["test"], workspace))?;
-    Ok(steps.finish())
+    Ok(())
 }
 
-fn c_build(workspace: &Path) -> Result<String> {
-    let mut steps = BuildSteps::new();
+fn c_build(workspace: &Path, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
 
     if workspace.join("clang-format.sh").exists() {
         steps.run(
@@ -121,11 +148,11 @@ fn c_build(workspace: &Path) -> Result<String> {
 
     steps.run("make", make_cmd("make", &[], &build_dir))?;
 
-    Ok(steps.finish())
+    Ok(())
 }
 
-fn java_build(workspace: &Path) -> Result<String> {
-    let mut steps = BuildSteps::new();
+fn java_build(workspace: &Path, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
 
     let frontend_dir = workspace.join("src").join("frontend");
     if frontend_dir.exists() {
@@ -170,7 +197,7 @@ fn java_build(workspace: &Path) -> Result<String> {
 
     steps.run("mvn package", make_cmd("mvn", &["package"], workspace))?;
 
-    Ok(steps.finish())
+    Ok(())
 }
 
 fn is_newer(a: &Path, b: &Path) -> bool {

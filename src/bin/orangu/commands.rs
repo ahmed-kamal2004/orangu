@@ -117,6 +117,15 @@ pub enum CommandOutcome {
     /// Re-exec into a different existing session, resuming the given UUID.
     SwitchSession(String),
     Blocking(Box<dyn FnOnce() -> anyhow::Result<String> + Send + 'static>),
+    /// A long-running command that streams its output line by line through the
+    /// sink as it is produced, rather than returning it all at once.
+    Streaming(
+        Box<
+            dyn FnOnce(tokio::sync::mpsc::UnboundedSender<String>) -> anyhow::Result<()>
+                + Send
+                + 'static,
+        >,
+    ),
     Async(Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'static>>),
     /// Enter the interactive `/review` mode with a collected branch diff.
     Review(ReviewLaunch),

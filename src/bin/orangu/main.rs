@@ -536,6 +536,56 @@ async fn run() -> Result<()> {
                 output_state.reset_scroll();
                 continue;
             }
+            CommandOutcome::Streaming(f) => {
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                let handle = tokio::task::spawn_blocking(move || f(tx));
+                // Recreate render here — handle_command's mutable borrows have ended.
+                let blocking_render = RenderContext {
+                    current_model: &active_model,
+                    endpoint: current_endpoint.as_deref().unwrap_or("(disconnected)"),
+                    workspace: tools.workspace(),
+                    prompt_branch: prompt_branch.as_deref(),
+                    header_status,
+                    virtual_width: viewport.virtual_width,
+                    actual_width: viewport.actual_width,
+                    actual_height: viewport.actual_height,
+                    x_offset: viewport.x_offset,
+                    banner: config.banner,
+                    feedback: config.feedback,
+                };
+                let result = wait_for_streaming_command(
+                    WaitContext {
+                        render: blocking_render,
+                        history: &mut history,
+                        history_path: &session_hist_path,
+                        model_names: &model_names,
+                        interrupt_state: &mut interrupt_state,
+                        output_state: &mut output_state,
+                        input_state: &mut input_state,
+                        pending_commands: &mut pending_commands,
+                        thinking_quote: None,
+                        viewport: &mut viewport,
+                    },
+                    handle,
+                    &mut rx,
+                )
+                .await?;
+                match result {
+                    Ok(()) => {
+                        if config.feedback {
+                            output_state.push_text(FEEDBACK_OK);
+                        }
+                    }
+                    Err(err) => {
+                        output_state.push_text(&format!("Error: {err:#}"));
+                        if config.feedback {
+                            output_state.push_text(FEEDBACK_ERR);
+                        }
+                    }
+                }
+                output_state.reset_scroll();
+                continue;
+            }
             CommandOutcome::Async(future) => {
                 let handle = tokio::spawn(future);
                 let blocking_render = RenderContext {
@@ -1373,8 +1423,8 @@ fn handle_command(
         LocalCommand::Usage => Ok(CommandOutcome::Output(usage_stats.format())),
         LocalCommand::Build => {
             let ws = workspace.to_path_buf();
-            Ok(CommandOutcome::Blocking(Box::new(move || {
-                build::build_output(&ws)
+            Ok(CommandOutcome::Streaming(Box::new(move |sink| {
+                build::build_output(&ws, &sink)
             })))
         }
         LocalCommand::Clear => {
@@ -2271,6 +2321,83 @@ async fn wait_for_local_command(
                 let next_frame = (elapsed.as_millis() / THINKING_FRAME_INTERVAL.as_millis()) as usize;
                 if next_frame != frame {
                     frame = next_frame;
+                }
+                while event::poll(std::time::Duration::ZERO)? {
+                    handle_input_event(
+                        event::read()?,
+                        input_state,
+                        interrupt_state,
+                        output_state,
+                        viewport,
+                        InputContext {
+                            history,
+                            workspace: render.workspace,
+                            model_names,
+                            render,
+                        },
+                    );
+                    render.actual_width = viewport.actual_width;
+                    render.actual_height = viewport.actual_height;
+                    render.x_offset = viewport.x_offset;
+                }
+                let left_status = Some(render_tool_running_status(frame, elapsed));
+                print_screen(
+                    render,
+                    ScreenState {
+                        transcript: output_state.lines(),
+                        scroll_offset: output_state.scroll_offset(),
+                        left_status,
+                        pending_count: pending_commands.len(),
+                        pending_line: None,
+                        input: input_state.as_str(),
+                        cursor: input_state.cursor(),
+                    },
+                );
+                std::io::stdout().flush()?;
+            }
+        }
+    }
+}
+
+/// Wait for a streaming command, draining its line channel into the output
+/// window as lines arrive so the build log appears live instead of all at once.
+async fn wait_for_streaming_command(
+    wait_context: WaitContext<'_>,
+    mut handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+) -> anyhow::Result<anyhow::Result<()>> {
+    let WaitContext {
+        mut render,
+        history,
+        history_path: _,
+        model_names,
+        interrupt_state,
+        output_state,
+        input_state,
+        pending_commands,
+        thinking_quote: _,
+        viewport,
+    } = wait_context;
+    let started = std::time::Instant::now();
+    let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
+    let mut frame = 0usize;
+    loop {
+        tokio::select! {
+            result = &mut handle => {
+                // Drain any lines still buffered before the task finished.
+                while let Ok(line) = rx.try_recv() {
+                    output_state.push_text(&line);
+                }
+                return Ok(result?);
+            }
+            _ = interval.tick() => {
+                let elapsed = started.elapsed();
+                let next_frame = (elapsed.as_millis() / THINKING_FRAME_INTERVAL.as_millis()) as usize;
+                if next_frame != frame {
+                    frame = next_frame;
+                }
+                while let Ok(line) = rx.try_recv() {
+                    output_state.push_text(&line);
                 }
                 while event::poll(std::time::Duration::ZERO)? {
                     handle_input_event(
