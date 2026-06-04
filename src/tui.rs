@@ -193,7 +193,7 @@ pub fn help_text() -> &'static str {
 /diff                                         Show a color unified diff against the current branch
 /grep <pattern>                               Search the workspace with git grep
 /init_repo                                    Initialize a Git repository in the workspace
-/log                                          Show commit log (uses git lg alias if configured)
+/log [number]                                 Show commit log (optionally the latest number of commits) plus a count of uncommitted/untracked changes
 /merge <branch>                               Merge a branch into the current branch
 /move_file <source> <destination>             Rename or move a tracked file with git mv
 /pull <number>                                Check out a GitHub/GitLab pull/merge request on a dedicated branch

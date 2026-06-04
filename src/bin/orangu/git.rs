@@ -22,7 +22,10 @@ use std::{
 };
 
 use super::commands::{current_terminal_width, shell_words};
-use super::render::{ANSI_FG_LIGHT_GREEN, ANSI_FG_LIGHT_RED, ANSI_FG_RESET, ANSI_FG_SUBTLE};
+use super::render::{
+    ANSI_BOLD_OFF, ANSI_BOLD_ON, ANSI_FG_LIGHT_GREEN, ANSI_FG_LIGHT_RED, ANSI_FG_RESET,
+    ANSI_FG_SUBTLE,
+};
 use orangu::tools::resolve_workspace_path;
 
 /// A code-hosting platform whose CLI orangu drives for pull/merge-request and
@@ -842,20 +845,20 @@ pub fn status_entry_color(x: char, y: char) -> &'static str {
     ""
 }
 
-pub fn log_output(workspace: &Path) -> Result<String> {
+pub fn log_output(workspace: &Path, count: Option<u64>) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("log is only available inside a Git repository"))?;
     if let Some(output) = try_gh_log(&repo_root)? {
         return Ok(output);
     }
-    git_log(&repo_root)
+    git_log(&repo_root, count)
 }
 
 pub fn try_gh_log(_repo_root: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-pub fn git_log(repo_root: &Path) -> Result<String> {
+pub fn git_log(repo_root: &Path, count: Option<u64>) -> Result<String> {
     let has_lg = std::process::Command::new("git")
         .args(["config", "--global", "--get", "alias.lg"])
         .output()
@@ -876,6 +879,9 @@ pub fn git_log(repo_root: &Path) -> Result<String> {
             "--decorate",
         ]);
     }
+    if let Some(count) = count {
+        command.arg(format!("--max-count={count}"));
+    }
 
     let output = command.output().context("failed to run git log")?;
     if !output.status.success() {
@@ -890,11 +896,74 @@ pub fn git_log(repo_root: &Path) -> Result<String> {
         ));
     }
     let log = String::from_utf8_lossy(&output.stdout).to_string();
+    let summary = pending_changes_summary(repo_root);
     if log.trim().is_empty() {
-        Ok("No commits yet.".to_string())
+        Ok(format!("No commits yet.\n{summary}"))
     } else {
-        Ok(log)
+        Ok(format!("{}\n{summary}", log.trim_end_matches('\n')))
     }
+}
+
+/// Counts uncommitted (tracked) and untracked changes in the working tree and
+/// renders a one-line, highlighted summary to append to `/log` output. Returns
+/// an empty string if the status check fails, so the log itself is never lost.
+pub fn pending_changes_summary(repo_root: &Path) -> String {
+    let (total, untracked) = match count_pending_changes(repo_root) {
+        Ok(counts) => counts,
+        Err(_) => return String::new(),
+    };
+    if total == 0 {
+        return format!("{ANSI_FG_SUBTLE}● Working tree clean{ANSI_FG_RESET}");
+    }
+    let tracked = total - untracked;
+    let mut parts = Vec::new();
+    if tracked > 0 {
+        parts.push(format!("{tracked} uncommitted"));
+    }
+    if untracked > 0 {
+        parts.push(format!("{untracked} untracked"));
+    }
+    format!(
+        "{ANSI_BOLD_ON}{ANSI_FG_LIGHT_RED}● {} change{} ({}){ANSI_FG_RESET}{ANSI_BOLD_OFF}",
+        total,
+        if total == 1 { "" } else { "s" },
+        parts.join(", "),
+    )
+}
+
+/// Returns `(total, untracked)` counts of changed paths in the working tree
+/// via `git status --porcelain`. Each porcelain line is one path.
+pub fn count_pending_changes(repo_root: &Path) -> Result<(usize, usize)> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["status", "--porcelain"])
+        .output()
+        .context("failed to run git status")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git status failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let mut total = 0;
+    let mut untracked = 0;
+    for line in raw.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        total += 1;
+        if line.starts_with("??") {
+            untracked += 1;
+        }
+    }
+    Ok((total, untracked))
 }
 
 pub fn pull_request_output(
@@ -2481,6 +2550,42 @@ mod tests {
         let result = init_repo_output(workspace.path());
         assert!(result.is_ok(), "init_repo_output failed: {:?}", result);
         assert!(workspace.path().join(".git").exists());
+    }
+
+    #[test]
+    fn counts_uncommitted_and_untracked_changes() {
+        let workspace = tempdir().expect("workspace");
+        init_git_for_test(workspace.path());
+
+        // Clean tree: no pending changes.
+        std::fs::write(workspace.path().join("tracked.txt"), "first\n").expect("write");
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git commit");
+        assert_eq!(
+            count_pending_changes(workspace.path()).expect("count"),
+            (0, 0)
+        );
+        assert!(pending_changes_summary(workspace.path()).contains("Working tree clean"));
+
+        // Modify a tracked file and add an untracked one.
+        std::fs::write(workspace.path().join("tracked.txt"), "changed\n").expect("write");
+        std::fs::write(workspace.path().join("untracked.txt"), "new\n").expect("write");
+        assert_eq!(
+            count_pending_changes(workspace.path()).expect("count"),
+            (2, 1)
+        );
+        let summary = pending_changes_summary(workspace.path());
+        assert!(summary.contains("2 changes"), "summary: {summary}");
+        assert!(summary.contains("1 uncommitted"), "summary: {summary}");
+        assert!(summary.contains("1 untracked"), "summary: {summary}");
     }
 
     #[test]

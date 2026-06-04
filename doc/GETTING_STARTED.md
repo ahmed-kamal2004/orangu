@@ -61,6 +61,7 @@ orangu --config ./orangu.conf
 - `/diff`
 - `/init_repo`
 - `/log`
+- `/log 5`
 - `/merge feature/foo`
 - `/move_file old.rs new.rs`
 - `/pull 42`

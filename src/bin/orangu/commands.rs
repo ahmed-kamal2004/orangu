@@ -170,7 +170,7 @@ pub enum LocalCommand<'a> {
     Grep(Option<Cow<'a, str>>),
     Review,
     Status,
-    Log,
+    Log(Option<u64>),
     Pull(Option<u64>),
     Comment(Option<(u64, Cow<'a, str>)>),
     CreatePullRequest,
@@ -252,7 +252,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/diff" => Some(LocalCommand::Diff(None)),
         "/grep" => Some(LocalCommand::Grep(None)),
         "/init_repo" => Some(LocalCommand::InitRepo),
-        "/log" => Some(LocalCommand::Log),
+        "/log" => Some(LocalCommand::Log(None)),
         "/merge" => Some(LocalCommand::Merge(None)),
         "/move_file" => Some(LocalCommand::MoveFile(None)),
         "/pull" => Some(LocalCommand::Pull(None)),
@@ -309,6 +309,9 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/show_file ") {
                 return Some(LocalCommand::ShowFile(Cow::Borrowed(args.trim())));
+            }
+            if let Some(args) = input.strip_prefix("/log ") {
+                return Some(LocalCommand::Log(args.trim().parse::<u64>().ok()));
             }
             if let Some(args) = input.strip_prefix("/pull ") {
                 return Some(LocalCommand::Pull(args.trim().parse::<u64>().ok()));
@@ -563,8 +566,15 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
             }
         }
     }
+    for prefix in ["log ", "show log ", "git log ", "git lg "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            if let Ok(count) = rest.trim().parse::<u64>() {
+                return Some(LocalCommand::Log(Some(count)));
+            }
+        }
+    }
     if matches_ci(input, &["log", "show log", "git log", "git lg"]) {
-        return Some(LocalCommand::Log);
+        return Some(LocalCommand::Log(None));
     }
     for prefix in [
         "use model ",
@@ -1330,27 +1340,43 @@ mod tests {
     fn parses_log_commands() {
         assert!(matches!(
             parse_local_command("/log"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
         ));
         assert!(matches!(
             parse_local_command("log"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
         ));
         assert!(matches!(
             parse_local_command("Log"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
         ));
         assert!(matches!(
             parse_local_command("show log"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
         ));
         assert!(matches!(
             parse_local_command("git log"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
         ));
         assert!(matches!(
             parse_local_command("git lg"),
-            Some(LocalCommand::Log)
+            Some(LocalCommand::Log(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/log 5"),
+            Some(LocalCommand::Log(Some(5)))
+        ));
+        assert!(matches!(
+            parse_local_command("log 10"),
+            Some(LocalCommand::Log(Some(10)))
+        ));
+        assert!(matches!(
+            parse_local_command("show log 3"),
+            Some(LocalCommand::Log(Some(3)))
+        ));
+        assert!(matches!(
+            parse_local_command("git lg 7"),
+            Some(LocalCommand::Log(Some(7)))
         ));
     }
 

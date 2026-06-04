@@ -1237,7 +1237,7 @@ fn handle_command(
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },
-        LocalCommand::Log => match log_output(workspace) {
+        LocalCommand::Log(count) => match log_output(workspace, count) {
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },

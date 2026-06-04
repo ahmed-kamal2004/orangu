@@ -125,6 +125,7 @@ Useful first commands:
 /commit "[#42] My feature"
 /delete feature/foo
 /log
+/log 5
 /squash
 /status
 ```
