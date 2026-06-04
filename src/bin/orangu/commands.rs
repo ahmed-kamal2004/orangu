@@ -567,10 +567,10 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         }
     }
     for prefix in ["log ", "show log ", "git log ", "git lg "] {
-        if let Some(rest) = strip_ascii_prefix(input, prefix) {
-            if let Ok(count) = rest.trim().parse::<u64>() {
-                return Some(LocalCommand::Log(Some(count)));
-            }
+        if let Some(rest) = strip_ascii_prefix(input, prefix)
+            && let Ok(count) = rest.trim().parse::<u64>()
+        {
+            return Some(LocalCommand::Log(Some(count)));
         }
     }
     if matches_ci(input, &["log", "show log", "git log", "git lg"]) {
