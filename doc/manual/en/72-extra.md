@@ -41,11 +41,20 @@ On Fedora, for example:
 sudo dnf install git-delta
 ```
 
-Then configure Git to use it. A minimal setup is:
+Then configure Git in `~/.gitconfig` to use it. A minimal setup is:
 
 ```ini
 [core]
-    pager = delta
+  pager = delta
+
+[interactive]
+  diffFilter = delta --color-only
+
+[delta]
+  navigate = true     # use n and N to move between diff sections
+  dark = true         # or light = true, or omit for auto-detection
+  side-by-side = true
+  line-numbers = true
 ```
 
 Please refer to the upstream documentation for full installation and configuration details:
