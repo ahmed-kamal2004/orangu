@@ -10,6 +10,14 @@ When started inside a Git repository, **orangu** fast-forwards the local default
 
 The sync runs in the background so it never delays startup. Its progress and result appear on the left of the status bar — `Syncing with origin…` while it runs, then `Synced <branch> with origin` (or `Sync failed: …`) for a few seconds. It is skipped silently when there is no `origin` remote, and a diverged branch or an unreachable `origin` is reported only on the status bar; startup continues normally regardless.
 
+### Command-line options
+
+| Short | Long          | Description                                                   |
+| ----- | ------------- | ------------------------------------------------------------- |
+| `-c`  | `--config`    | Path to the configuration file (`orangu.conf`).               |
+| `-w`  | `--workspace` | Workspace root the local tools operate on. Defaults to `.`.   |
+| `-r`  | `--resume`    | Resume a specific session by UUID.                            |
+
 ## Header
 
 The top banner displays:
@@ -66,7 +74,7 @@ If more than one session matches the current workspace and branch, a fresh sessi
 
 ### Manual resume
 
-To resume a specific session regardless of workspace or branch, pass `--resume <uuid>` when starting:
+To resume a specific session regardless of workspace or branch, pass `--resume <uuid>` (short form `-r`) when starting:
 
 ```text
 orangu --resume 550e8400-e29b-41d4-a716-446655440000

@@ -1,0 +1,13 @@
+% Map non-ASCII glyphs that appear inside inline code / code blocks so the
+% `listings` package (used via pandoc's --listings) can typeset them under
+% xelatex/lualatex instead of aborting with "Undefined control sequence".
+%
+% Deferred to \AtBeginDocument so it runs after the eisvogel template's own
+% \lstset, whose `literate` list would otherwise clobber these mappings.
+\AtBeginDocument{%
+  \lstset{%
+    literate={—}{{\textemdash}}1
+             {…}{{\ldots}}1
+             {●}{{\textbullet}}1
+  }%
+}

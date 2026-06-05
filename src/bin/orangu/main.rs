@@ -94,11 +94,11 @@ const RESTART_DIRECTORY: &str = ".orangu/last";
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(long)]
+    #[arg(short, long)]
     config: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short, long)]
     workspace: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(short, long)]
     resume: Option<String>,
 }
 

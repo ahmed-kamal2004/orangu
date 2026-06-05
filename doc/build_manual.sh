@@ -43,6 +43,7 @@ echo "Generating PDF manual: $PDF_OUTPUT"
     --resource-path="$RESOURCE_PATH" \
     --template eisvogel \
     --listings \
+    --include-in-header "$SCRIPT_DIR/manual/header-listings.tex" \
     --pdf-engine="$PDF_ENGINE" \
     -N \
     --toc \

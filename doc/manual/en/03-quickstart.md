@@ -96,6 +96,8 @@ Then start with:
 
 By default the tools operate on the current directory. Use `--workspace /path/to/project` to point **orangu** at another tree.
 
+The startup flags have short forms: `-c` for `--config`, `-w` for `--workspace`, and `-r` for `--resume`.
+
 **orangu** automatically resumes an existing session when you return to the same workspace and Git branch. When a previous session is found, the status bar shows:
 
 ```text

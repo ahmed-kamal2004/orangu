@@ -1,0 +1,25 @@
+#compdef orangu
+# zsh completion for orangu
+#
+# Install: place this file (named `_orangu`) in a directory on your $fpath,
+# e.g. ~/.zsh/completions, then ensure compinit is initialized:
+#   fpath=(~/.zsh/completions $fpath)
+#   autoload -Uz compinit && compinit
+
+# Completes session UUIDs from ~/.orangu/sessions, newest first.
+_orangu_sessions() {
+    local sessions_dir="${HOME}/.orangu/sessions"
+    local -a uuids
+    [[ -d $sessions_dir ]] && uuids=( $sessions_dir/*(/Nom:t) )
+    _describe -t sessions 'session' uuids
+}
+
+_orangu() {
+    _arguments -s \
+        '(-c --config)'{-c,--config}'[Path to the configuration file (orangu.conf)]:config file:_files' \
+        '(-w --workspace)'{-w,--workspace}'[Workspace root for local tools]:workspace directory:_files -/' \
+        '(-r --resume)'{-r,--resume}'[Resume a session by UUID]:session uuid:_orangu_sessions' \
+        '(-h --help)'{-h,--help}'[Print help]'
+}
+
+_orangu "$@"

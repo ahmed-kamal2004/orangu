@@ -109,7 +109,11 @@ Or run it directly from the build tree:
 ./target/release/orangu --config ./orangu.conf
 ```
 
-By default, local tools operate on the current working directory. Use `--workspace /path/to/project` to point **orangu** at another tree.
+By default, local tools operate on the current working directory. Use `--workspace /path/to/project` (`-w`) to point **orangu** at another tree.
+
+The startup flags also have short forms: `-c` for `--config`, `-w` for `--workspace`, and `-r` for `--resume`.
+
+Shell completion scripts (bash, zsh, fish) for these flags live in [`contrib/shell/`](contrib/shell/README.md).
 
 Useful first commands:
 
