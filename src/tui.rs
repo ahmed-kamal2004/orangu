@@ -189,6 +189,8 @@ pub fn help_text() -> &'static str {
 /branch [<name>|-a|-b|-m|-d <name>]           List, switch, create, rename or delete a branch
 /cherry_pick <commit>                         Cherry-pick a commit onto the current branch
 /comment <number> "<comment>"|<file>          Add a comment to a GitHub/GitLab issue; inline body or file from ~/.orangu/comments/
+/close -i <number>                            Close a GitHub/GitLab issue with gh/glab
+/close -p <number>                            Close a GitHub/GitLab pull request/MR with gh/glab
 /commit <message>                             Commit all tracked changes with git commit -a -m
 /diff                                         Show a color unified diff against the current branch
 /grep <pattern>                               Search the workspace with git grep

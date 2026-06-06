@@ -144,6 +144,11 @@ pub enum CommentBody<'a> {
     File(Cow<'a, str>),
 }
 
+pub enum CloseTarget {
+    Issue(u64),
+    PullRequest(u64),
+}
+
 pub enum StashSubcommand {
     Push,
     Pop,
@@ -180,6 +185,7 @@ pub enum LocalCommand<'a> {
     Log(Option<u64>),
     Pull(Option<u64>),
     Comment(Option<(u64, CommentBody<'a>)>),
+    Close(Option<CloseTarget>),
     CreatePullRequest,
     Rebase,
     Merge(Option<Cow<'a, str>>),
@@ -264,6 +270,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/move_file" => Some(LocalCommand::MoveFile(None)),
         "/pull" => Some(LocalCommand::Pull(None)),
         "/comment" => Some(LocalCommand::Comment(None)),
+        "/close" => Some(LocalCommand::Close(None)),
         "/pull_request" => Some(LocalCommand::CreatePullRequest),
         "/review" => Some(LocalCommand::Review),
         "/push" => Some(LocalCommand::Push(false)),
@@ -325,6 +332,9 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/comment ") {
                 return Some(LocalCommand::Comment(parse_comment_args(args.trim())));
+            }
+            if let Some(args) = input.strip_prefix("/close ") {
+                return Some(LocalCommand::Close(parse_close_args(args.trim())));
             }
             if let Some(args) = input.strip_prefix("/merge ") {
                 let branch = args.trim();
@@ -625,6 +635,18 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         ],
     ) {
         return Some(LocalCommand::CreatePullRequest);
+    }
+    for prefix in ["close issue ", "close -i "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            let n = rest.trim().trim_start_matches('#').parse::<u64>().ok();
+            return Some(LocalCommand::Close(n.map(CloseTarget::Issue)));
+        }
+    }
+    for prefix in ["close pr ", "close pull request ", "close -p "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            let n = rest.trim().trim_start_matches('#').parse::<u64>().ok();
+            return Some(LocalCommand::Close(n.map(CloseTarget::PullRequest)));
+        }
     }
     if matches_ci(input, &["stash", "git stash", "git stash push"]) {
         return Some(LocalCommand::Stash(StashSubcommand::Push));
@@ -1059,6 +1081,31 @@ pub fn pull_usage_message() -> &'static str {
     "Usage: /pull <number>. Use /help to see available commands."
 }
 
+pub fn parse_close_args(input: &str) -> Option<CloseTarget> {
+    let input = input.trim();
+    if let Some(rest) = input.strip_prefix("-i ") {
+        return rest
+            .trim()
+            .trim_start_matches('#')
+            .parse::<u64>()
+            .ok()
+            .map(CloseTarget::Issue);
+    }
+    if let Some(rest) = input.strip_prefix("-p ") {
+        return rest
+            .trim()
+            .trim_start_matches('#')
+            .parse::<u64>()
+            .ok()
+            .map(CloseTarget::PullRequest);
+    }
+    None
+}
+
+pub fn close_usage_message() -> &'static str {
+    "Usage: /close -i <number> or /close -p <number>. Use /help to see available commands."
+}
+
 pub fn comment_usage_message() -> &'static str {
     "Usage: /comment <number> \"<comment>\" or /comment <number> <file>. Use /help to see available commands."
 }
@@ -1312,6 +1359,42 @@ mod tests {
         assert!(matches!(
             parse_local_command("/comment notanumber \"My comment\""),
             Some(LocalCommand::Comment(None))
+        ));
+    }
+
+    #[test]
+    fn parses_close_commands() {
+        assert!(matches!(
+            parse_local_command("/close -i 69"),
+            Some(LocalCommand::Close(Some(CloseTarget::Issue(69))))
+        ));
+        assert!(matches!(
+            parse_local_command("/close -p 42"),
+            Some(LocalCommand::Close(Some(CloseTarget::PullRequest(42))))
+        ));
+        assert!(matches!(
+            parse_local_command("close issue 69"),
+            Some(LocalCommand::Close(Some(CloseTarget::Issue(69))))
+        ));
+        assert!(matches!(
+            parse_local_command("close pr 42"),
+            Some(LocalCommand::Close(Some(CloseTarget::PullRequest(42))))
+        ));
+        assert!(matches!(
+            parse_local_command("close pull request 42"),
+            Some(LocalCommand::Close(Some(CloseTarget::PullRequest(42))))
+        ));
+        assert!(matches!(
+            parse_local_command("/close"),
+            Some(LocalCommand::Close(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/close -i"),
+            Some(LocalCommand::Close(None))
+        ));
+        assert!(matches!(
+            parse_local_command("/close -p notanumber"),
+            Some(LocalCommand::Close(None))
         ));
     }
 

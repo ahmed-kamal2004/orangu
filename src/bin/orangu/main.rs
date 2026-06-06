@@ -59,15 +59,15 @@ use commands::ReviewLaunch;
 use commands::{
     BranchSubcommand, CommandContext, CommandOutcome, CommandState, LocalCommand, LocalError,
     StashSubcommand, add_file_usage_message, amend_usage_message, cherry_pick_usage_message,
-    comment_usage_message, commit_usage_message, connect_usage_message, grep_usage_message,
-    merge_usage_message, model_usage_message, move_file_usage_message, open_file_usage_message,
-    parse_local_command, pull_usage_message, remove_file_usage_message, restore_usage_message,
-    sorted_model_names, system_prompt,
+    close_usage_message, comment_usage_message, commit_usage_message, connect_usage_message,
+    grep_usage_message, merge_usage_message, model_usage_message, move_file_usage_message,
+    open_file_usage_message, parse_local_command, pull_usage_message, remove_file_usage_message,
+    restore_usage_message, sorted_model_names, system_prompt,
 };
 use git::{
     Forge, add_file_output, amend_output, branch_create_output, branch_delete_output,
     branch_list_all_output, branch_list_output, branch_rename_output, cherry_pick_output,
-    collect_review_diff, comment_output, commit_output, create_pull_request_output,
+    close_output, collect_review_diff, comment_output, commit_output, create_pull_request_output,
     discover_git_root, git_checkout, git_diff_against_branch, git_workspace_diff, grep_output,
     init_repo_output, list_workspace_files_tree, log_output, merge_output, move_file_output,
     open_in_editor, pull_request_output, push_output, rebase_output, remove_file_output,
@@ -1260,6 +1260,13 @@ fn handle_command(
                 Err(err) => Ok(local_command_error(err)),
             }
         }
+        LocalCommand::Close(None) => Ok(CommandOutcome::OutputError(
+            close_usage_message().to_string(),
+        )),
+        LocalCommand::Close(Some(target)) => match close_output(workspace, &target, forge) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
         LocalCommand::CreatePullRequest => {
             let ws = workspace.to_path_buf();
             Ok(CommandOutcome::Blocking(Box::new(move || {

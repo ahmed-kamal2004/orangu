@@ -21,7 +21,7 @@ use std::{
     process::Stdio,
 };
 
-use super::commands::{CommentBody, current_terminal_width, shell_words};
+use super::commands::{CloseTarget, CommentBody, current_terminal_width, shell_words};
 use super::render::{
     ANSI_BOLD_OFF, ANSI_BOLD_ON, ANSI_FG_LIGHT_GREEN, ANSI_FG_LIGHT_RED, ANSI_FG_RESET,
     ANSI_FG_SUBTLE,
@@ -1174,6 +1174,55 @@ pub fn comment_output(
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(if stdout.is_empty() {
         format!("Added comment on issue #{issue_number}")
+    } else {
+        stdout
+    })
+}
+
+pub fn close_output(workspace: &Path, target: &CloseTarget, forge: Forge) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("close is only available inside a Git repository"))?;
+    let cli = forge.cli();
+    let number = match target {
+        CloseTarget::Issue(n) | CloseTarget::PullRequest(n) => n.to_string(),
+    };
+    // GitHub: `gh issue close N` / `gh pr close N`
+    // GitLab: `glab issue close N` / `glab mr close N`
+    let args: Vec<&str> = match (forge, target) {
+        (Forge::GitHub, CloseTarget::Issue(_)) => vec!["issue", "close", &number],
+        (Forge::GitHub, CloseTarget::PullRequest(_)) => vec!["pr", "close", &number],
+        (Forge::GitLab, CloseTarget::Issue(_)) => vec!["issue", "close", &number],
+        (Forge::GitLab, CloseTarget::PullRequest(_)) => vec!["mr", "close", &number],
+    };
+    let output = match std::process::Command::new(cli)
+        .args(&args)
+        .current_dir(&repo_root)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(anyhow!("close requires the {cli} CLI to be installed"));
+        }
+        Err(err) => return Err(err).context(format!("failed to run {cli}")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "{cli} close failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+    let kind = match target {
+        CloseTarget::Issue(_) => "issue",
+        CloseTarget::PullRequest(_) => "pull request",
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Closed {kind} #{number}")
     } else {
         stdout
     })

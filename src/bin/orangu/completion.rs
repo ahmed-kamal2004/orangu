@@ -41,6 +41,7 @@ pub const COMMANDS: &[&str] = &[
     "/log",
     "/pull",
     "/comment",
+    "/close",
     "/rebase",
     "/merge",
     "/branch",
