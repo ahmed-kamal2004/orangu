@@ -22,12 +22,40 @@ use anyhow::{Result, anyhow};
 
 pub struct ChatSession {
     messages: Vec<ChatMessage>,
+    /// Cached LLM client, reused across prompts so the underlying HTTP
+    /// connection pool survives between requests. Rebuilt only when the
+    /// profile fields that shape the client change.
+    client: Option<(ClientKey, OpenAiClient)>,
+}
+
+/// The subset of [`LlmConfiguration`] that the [`OpenAiClient`] is built from.
+/// Two profiles producing the same key yield an interchangeable client.
+#[derive(PartialEq, Eq)]
+struct ClientKey {
+    provider: String,
+    endpoint: String,
+    model: String,
+    api_key: Option<String>,
+    request_timeout_seconds: u64,
+}
+
+impl ClientKey {
+    fn from_profile(profile: &LlmConfiguration) -> Self {
+        Self {
+            provider: profile.provider.clone(),
+            endpoint: profile.endpoint.clone(),
+            model: profile.model.clone(),
+            api_key: profile.api_key.clone(),
+            request_timeout_seconds: profile.request_timeout_seconds,
+        }
+    }
 }
 
 impl ChatSession {
     pub fn new(system_prompt: &str) -> Self {
         Self {
             messages: vec![ChatMessage::system(system_prompt)],
+            client: None,
         }
     }
 
@@ -75,7 +103,17 @@ impl ChatSession {
         G: FnMut(StreamMetrics),
         H: FnMut(bool),
     {
-        let client = OpenAiClient::from_profile(profile)?;
+        let key = ClientKey::from_profile(profile);
+        if self.client.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            self.client = Some((key, OpenAiClient::from_profile(profile)?));
+        }
+        // Cheap clone: shares the underlying reqwest connection pool.
+        let client = self
+            .client
+            .as_ref()
+            .expect("client populated above")
+            .1
+            .clone();
         let tool_definitions = tools.definitions();
         let checkpoint = self.checkpoint();
         self.messages.push(ChatMessage::user(user_input));

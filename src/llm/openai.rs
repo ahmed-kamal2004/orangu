@@ -23,6 +23,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, time::Duration};
 
+#[derive(Clone)]
 pub struct OpenAiClient {
     http_client: Client,
     endpoint: String,
