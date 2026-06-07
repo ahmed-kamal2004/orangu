@@ -20,6 +20,8 @@ pub enum QuoteModule {
     MarcoPierreWhite,
     GordonRamsay,
     CalvinAndHobbes,
+    SunTzuMandarin,
+    SunTzuEnglish,
     All,
 }
 
@@ -32,6 +34,8 @@ pub const QUOTE_OPTIONS: &[&str] = &[
     "marco_pierre_white",
     "gordon_ramsay",
     "calvin_and_hobbes",
+    "sun_tzu_mandarin",
+    "sun_tzu_english",
     "all",
 ];
 
@@ -43,6 +47,8 @@ impl QuoteModule {
             "marco_pierre_white" => Self::MarcoPierreWhite,
             "gordon_ramsay" => Self::GordonRamsay,
             "calvin_and_hobbes" => Self::CalvinAndHobbes,
+            "sun_tzu_mandarin" => Self::SunTzuMandarin,
+            "sun_tzu_english" => Self::SunTzuEnglish,
             "all" => Self::All,
             _ => Self::None,
         }
@@ -56,12 +62,16 @@ impl QuoteModule {
             Self::MarcoPierreWhite => &[MARCO_PIERRE_WHITE],
             Self::GordonRamsay => &[GORDON_RAMSAY],
             Self::CalvinAndHobbes => &[CALVIN_AND_HOBBES],
+            Self::SunTzuMandarin => &[SUN_TZU_MANDARIN],
+            Self::SunTzuEnglish => &[SUN_TZU_ENGLISH],
             Self::All => &[
                 STAR_TREK,
                 STAR_WARS,
                 MARCO_PIERRE_WHITE,
                 GORDON_RAMSAY,
                 CALVIN_AND_HOBBES,
+                SUN_TZU_MANDARIN,
+                SUN_TZU_ENGLISH,
             ],
         };
         let total: usize = pool.iter().map(|s| s.len()).sum();
@@ -149,6 +159,45 @@ static CALVIN_AND_HOBBES: &[&str] = &[
     "Weekends don't count unless you spend them doing something completely pointless.",
 ];
 
+// Sun Tzu, The Art of War (孫子兵法).
+static SUN_TZU_MANDARIN: &[&str] = &[
+    "兵者，國之大事，死生之地，存亡之道，不可不察也。",
+    "知彼知己，百戰不殆。",
+    "兵者，詭道也。",
+    "不戰而屈人之兵，善之善者也。",
+    "上兵伐謀，其次伐交，其次伐兵，其下攻城。",
+    "故善戰者，致人而不致於人。",
+    "兵貴勝，不貴久。",
+    "攻其無備，出其不意。",
+    "善戰者，求之於勢，不責於人。",
+    "故善用兵者，屈人之兵而非戰也。",
+    "勝兵先勝而後求戰，敗兵先戰而後求勝。",
+    "故善戰者，立於不敗之地，而不失敵之敗也。",
+    "善守者，藏於九地之下；善攻者，動於九天之上。",
+    "凡戰者，以正合，以奇勝。",
+    "故知勝有五：知可以戰與不可以戰者勝。",
+    "其疾如風，其徐如林，侵掠如火，不動如山。",
+];
+
+static SUN_TZU_ENGLISH: &[&str] = &[
+    "The art of war is of vital importance to the State.",
+    "If you know the enemy and know yourself, you need not fear the result of a hundred battles.",
+    "All warfare is based on deception.",
+    "To subdue the enemy without fighting is the acme of skill.",
+    "The supreme art of war is to subdue the enemy without fighting.",
+    "The skilful fighter imposes his will on the enemy, but does not allow the enemy's will to be imposed on him.",
+    "In war, then, let your great object be victory, not lengthy campaigns.",
+    "Attack him where he is unprepared, appear where you are not expected.",
+    "The clever combatant looks to the effect of combined energy, and does not require too much from individuals.",
+    "The skilful leader subdues the enemy's troops without any fighting.",
+    "Victorious warriors win first and then go to war, while defeated warriors go to war first and then seek to win.",
+    "The good fighter is able to secure himself against defeat, but cannot make certain of defeating the enemy.",
+    "He who is skilled in defence hides in the most secret recesses of the earth; he who is skilled in attack flashes forth from the topmost heights of heaven.",
+    "In all fighting, the direct method may be used for joining battle, but indirect methods will be needed in order to secure victory.",
+    "He will win who knows when to fight and when not to fight.",
+    "Let your rapidity be that of the wind, your compactness that of the forest. In raiding and plundering be like fire, in immovability like a mountain.",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +215,8 @@ mod tests {
         assert!(QuoteModule::MarcoPierreWhite.pick(2).is_some());
         assert!(QuoteModule::GordonRamsay.pick(3).is_some());
         assert!(QuoteModule::CalvinAndHobbes.pick(4).is_some());
+        assert!(QuoteModule::SunTzuMandarin.pick(5).is_some());
+        assert!(QuoteModule::SunTzuEnglish.pick(6).is_some());
     }
 
     #[test]
@@ -176,6 +227,8 @@ mod tests {
             MARCO_PIERRE_WHITE,
             GORDON_RAMSAY,
             CALVIN_AND_HOBBES,
+            SUN_TZU_MANDARIN,
+            SUN_TZU_ENGLISH,
         ]
         .iter()
         .map(|s| s.len())
@@ -207,6 +260,14 @@ mod tests {
         assert!(matches!(
             QuoteModule::from_str("calvin_and_hobbes"),
             QuoteModule::CalvinAndHobbes
+        ));
+        assert!(matches!(
+            QuoteModule::from_str("sun_tzu_mandarin"),
+            QuoteModule::SunTzuMandarin
+        ));
+        assert!(matches!(
+            QuoteModule::from_str("sun_tzu_english"),
+            QuoteModule::SunTzuEnglish
         ));
         assert!(matches!(QuoteModule::from_str("all"), QuoteModule::All));
         assert!(matches!(
