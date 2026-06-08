@@ -2626,7 +2626,8 @@ mod tests {
 
     #[test]
     fn parses_github_pull_request_list() {
-        let json = br#"[{"number":90,"title":"Add pull completion"},{"number":58,"title":"Fix rebase"}]"#;
+        let json =
+            br#"[{"number":90,"title":"Add pull completion"},{"number":58,"title":"Fix rebase"}]"#;
         let requests = parse_pull_request_list(json, Forge::GitHub).expect("parse");
         assert_eq!(
             requests,
@@ -2659,7 +2660,11 @@ mod tests {
 
     #[test]
     fn empty_pull_request_list_is_empty() {
-        assert!(parse_pull_request_list(b"", Forge::GitHub).expect("parse").is_empty());
+        assert!(
+            parse_pull_request_list(b"", Forge::GitHub)
+                .expect("parse")
+                .is_empty()
+        );
         assert!(
             parse_pull_request_list(b"[]\n", Forge::GitHub)
                 .expect("parse")
