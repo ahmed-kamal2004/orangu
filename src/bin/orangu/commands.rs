@@ -595,7 +595,6 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "show file ",
     "show ",
     // --- pull (fetch pull request) ---
-    "pull pull request ",
     "pull request ",
     "pull pr ",
     "pull #",
@@ -1218,13 +1217,7 @@ pub fn parse_show_file_target(path: &str, single_token_only: bool) -> Option<&st
 }
 
 pub fn parse_pull_pr_number(input: &str) -> Option<u64> {
-    for prefix in [
-        "pull pull request ",
-        "pull request ",
-        "pull pr ",
-        "pull #",
-        "pull ",
-    ] {
+    for prefix in ["pull request ", "pull pr ", "pull #", "pull "] {
         if let Some(rest) = strip_ascii_prefix(input, prefix)
             && let Ok(num) = rest.trim().parse::<u64>()
         {
@@ -1593,10 +1586,6 @@ mod tests {
         ));
         assert!(matches!(
             parse_local_command("pull request 58"),
-            Some(LocalCommand::Pull(Some(58)))
-        ));
-        assert!(matches!(
-            parse_local_command("pull pull request 58"),
             Some(LocalCommand::Pull(Some(58)))
         ));
         assert!(matches!(

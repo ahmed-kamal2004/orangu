@@ -3165,7 +3165,7 @@ mod tests {
         parse_local_command, system_prompt,
     };
     use super::completion::{
-        command_ghost_suffix, completion_candidates, completion_ghost_suffix,
+        command_ghost_suffix, completion_candidates, completion_ghost_suffix, first_ghost_word,
         natural_language_ghost_candidates, natural_language_ghost_suffix_at,
     };
     use super::git::with_explicit_pager_width;
@@ -4820,6 +4820,20 @@ mod tests {
     }
 
     #[test]
+    fn first_ghost_word_accepts_one_word_at_a_time() {
+        // A multi-word suffix yields just the leading word plus its trailing
+        // space, so "pus" -> "push " (with "force" left to preview next).
+        assert_eq!(first_ghost_word("h force"), "h ");
+        assert_eq!(first_ghost_word("comment on "), "comment ");
+        // A single-word suffix is taken whole, trailing space and all.
+        assert_eq!(first_ghost_word("onnect"), "onnect");
+        assert_eq!(first_ghost_word("gainst "), "gainst ");
+        // Degenerate suffixes are returned untouched.
+        assert_eq!(first_ghost_word(""), "");
+        assert_eq!(first_ghost_word("force"), "force");
+    }
+
+    #[test]
     fn shift_tab_cycles_through_natural_language_candidates() {
         // "c" matches several bindings; cycling walks them in priority order and
         // wraps back to the first. Bindings differing only by trailing whitespace
@@ -4859,12 +4873,18 @@ mod tests {
     fn tab_accepts_natural_language_ghost_suggestion() {
         let workspace = tempdir().expect("workspace");
 
-        // Tab fills in the ghosted binding when no structured candidate applies.
+        // Tab fills in the ghosted binding one word at a time, so a multi-word
+        // binding grows with each press rather than landing all at once. Typing
+        // "pus" completes to "push " (with "force" then previewed as the ghost),
+        // and the next Tab accepts that word too.
         let mut input_state = InputState::default();
-        input_state.set_buffer("ad".to_string());
+        input_state.set_buffer("pus".to_string());
         apply_completion(&mut input_state, workspace.path(), &[], &[]);
-        assert_eq!(input_state.as_str(), "add comment on ");
-        assert_eq!(input_state.cursor(), "add comment on ".len());
+        assert_eq!(input_state.as_str(), "push ");
+        assert_eq!(input_state.cursor(), "push ".len());
+        assert_eq!(natural_language_ghost_suffix_at("push ", 0), Some("force"));
+        apply_completion(&mut input_state, workspace.path(), &[], &[]);
+        assert_eq!(input_state.as_str(), "push force");
 
         // A fully typed binding has no ghost, so Tab leaves it untouched.
         let mut input_state = InputState::default();
@@ -4881,10 +4901,14 @@ mod tests {
         apply_completion(&mut input_state, repo.path(), &[], &[]);
         assert_eq!(input_state.as_str(), "connect");
 
-        // Shift+Tab advances the preview; Tab then accepts the shown candidate.
+        // Shift+Tab advances the preview; Tab then accepts the first word of the
+        // shown candidate (word-at-a-time).
         let mut input_state = InputState::default();
         input_state.set_buffer("c".to_string());
-        let second = format!("c{}", natural_language_ghost_candidates("c")[1]);
+        let second = format!(
+            "c{}",
+            first_ghost_word(natural_language_ghost_candidates("c")[1])
+        );
         cycle_ghost_suggestion(&mut input_state);
         assert_eq!(input_state.ghost_index, 1);
         apply_completion(&mut input_state, workspace.path(), &[], &[]);

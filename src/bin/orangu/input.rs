@@ -26,7 +26,8 @@ use std::{
 };
 
 use super::completion::{
-    completion_candidates, natural_language_ghost_candidates, natural_language_ghost_suffix_at,
+    completion_candidates, first_ghost_word, natural_language_ghost_candidates,
+    natural_language_ghost_suffix_at,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -886,13 +887,18 @@ pub fn apply_completion(
     // The cycle position chosen with Shift+Tab decides which candidate is taken.
     // Only when the cursor is at the end of the line, matching where the ghost
     // is drawn. Slash commands return `None` here and use the cycling path below.
+    //
+    // Tab accepts one word at a time so a multi-word binding fills in
+    // progressively: `pus` -> `push ` (with `force` then previewed), then
+    // `push ` -> `push force`. The remaining words stay rendered as the ghost.
     if input_state.cursor() == input_state.buffer.len()
         && let Some(suffix) =
             natural_language_ghost_suffix_at(input_state.as_str(), input_state.ghost_index)
     {
+        let word = first_ghost_word(suffix);
         let end = input_state.buffer.len();
         let original = input_state.buffer.clone();
-        apply_completion_candidate(input_state, end, end, &original, suffix);
+        apply_completion_candidate(input_state, end, end, &original, word);
         return;
     }
 

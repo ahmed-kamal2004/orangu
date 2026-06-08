@@ -141,6 +141,27 @@ pub fn natural_language_ghost_suffix_at(input: &str, index: usize) -> Option<&'s
     Some(candidates[index % candidates.len()])
 }
 
+/// The leading single word of a natural-language ghost `suffix`, including the
+/// whitespace that trails it, so Tab accepts a multi-word binding one word at a
+/// time. For `"h force"` (completing `push` then `force`) this is `"h "`; for a
+/// suffix with no internal whitespace such as `"onnect"` it is the whole suffix.
+/// Keeping the trailing space matters: accepting `pus` -> `push ` leaves the
+/// ghost alive so the next word (`force`) can be previewed and accepted in turn.
+pub fn first_ghost_word(suffix: &str) -> &str {
+    let Some(word_start) = suffix.find(|ch: char| !ch.is_whitespace()) else {
+        return suffix;
+    };
+    let Some(rel_end) = suffix[word_start..].find(char::is_whitespace) else {
+        return suffix;
+    };
+    let word_end = word_start + rel_end;
+    let next = suffix[word_end..]
+        .find(|ch: char| !ch.is_whitespace())
+        .map(|index| word_end + index)
+        .unwrap_or(suffix.len());
+    &suffix[..next]
+}
+
 pub fn completion_candidates(
     input: &str,
     cursor: usize,
