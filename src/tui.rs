@@ -188,8 +188,7 @@ pub fn help_text() -> &'static str {
 /branch [<name>|-a|-b|-m|-d <name>]           List, switch, create, rename or delete a branch
 /cherry_pick <commit>                         Cherry-pick a commit onto the current branch
 /comment <number> "<comment>"|<file>          Add a comment to a GitHub/GitLab issue; inline body or file from ~/.orangu/comments/
-/close -i <number>                            Close a GitHub/GitLab issue with gh/glab
-/close -p <number>                            Close a GitHub/GitLab pull request/MR with gh/glab
+/close -i <number>|-p <number>                Close a GitHub/GitLab issue or pull request with gh/glab
 /commit <message>                             Commit all tracked changes with git commit -a -m
 /diff                                         Show a color unified diff against the current branch
 /grep <pattern>                               Search the workspace with git grep
@@ -205,10 +204,7 @@ pub fn help_text() -> &'static str {
 /restore [--staged] <file>                    Restore a file or unstage it (git restore)
 /review                                       Review branch changes against main/master in a split view
 /squash                                       Squash all branch commits into one
-/stash                                        Save uncommitted changes (git stash push)
-/stash pop                                    Restore the most recent stash
-/stash list                                   List all saved stashes
-/stash drop                                   Discard the most recent stash
+/stash [pop|list|drop]                        Save uncommitted changes (git stash push), restore, list or discard
 /status                                       Show working tree status with color highlighting
 /usage                                        Show usage statistics for this session
 /clear                                        Clear the current conversation
