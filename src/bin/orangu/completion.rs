@@ -46,6 +46,7 @@ pub const COMMANDS: &[&str] = &[
     "/pull",
     "/comment",
     "/close",
+    "/prune",
     "/rebase",
     "/merge",
     "/branch",
@@ -444,6 +445,17 @@ fn structured_completion_candidates(
             candidates = session_path_completion_candidates(arg_prefix);
         }
         return Some(("/session ".len(), cursor, candidates));
+    }
+
+    if let Some(uuid_prefix) = prefix.strip_prefix("/prune ")
+        && !uuid_prefix.starts_with('-')
+        && !uuid_prefix.eq_ignore_ascii_case("all")
+    {
+        let candidates = session_uuids_newest_first()
+            .into_iter()
+            .filter(|u| u.starts_with(uuid_prefix))
+            .collect();
+        return Some(("/prune ".len(), cursor, candidates));
     }
 
     None

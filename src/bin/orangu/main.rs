@@ -59,11 +59,12 @@ use anyhow::Error;
 use commands::ReviewLaunch;
 use commands::{
     BranchSubcommand, CommandContext, CommandOutcome, CommandState, LocalCommand, LocalError,
-    StashSubcommand, add_file_usage_message, amend_usage_message, cherry_pick_usage_message,
-    close_usage_message, comment_usage_message, commit_usage_message, grep_usage_message,
-    merge_usage_message, model_usage_message, move_file_usage_message, open_file_usage_message,
-    parse_local_command, pull_usage_message, remove_file_usage_message, restore_usage_message,
-    server_usage_message, sorted_model_names, system_prompt,
+    PruneTarget, StashSubcommand, add_file_usage_message, amend_usage_message,
+    cherry_pick_usage_message, close_usage_message, comment_usage_message, commit_usage_message,
+    grep_usage_message, merge_usage_message, model_usage_message, move_file_usage_message,
+    open_file_usage_message, parse_local_command, prune_usage_message, pull_usage_message,
+    remove_file_usage_message, restore_usage_message, server_usage_message, sorted_model_names,
+    system_prompt,
 };
 use git::{
     Forge, add_file_output, amend_output, branch_create_output, branch_delete_output,
@@ -1480,6 +1481,15 @@ fn handle_command(
                 _ => {}
             }
             match list_sessions_output(Some(arg.as_ref()), &usage_stats.session_id) {
+                Ok(output) => Ok(CommandOutcome::Output(output)),
+                Err(err) => Ok(local_command_error(err)),
+            }
+        }
+        LocalCommand::Prune(None) => Ok(CommandOutcome::OutputError(
+            prune_usage_message().to_string(),
+        )),
+        LocalCommand::Prune(Some(target)) => {
+            match prune_sessions_output(&target, &usage_stats.session_id) {
                 Ok(output) => Ok(CommandOutcome::Output(output)),
                 Err(err) => Ok(local_command_error(err)),
             }
@@ -3133,6 +3143,81 @@ fn list_sessions_output(workspace_filter: Option<&str>, active_session: &str) ->
             "{dot}       {:<w_uuid$}  {:<w_started$}  {:<w_last$}  {:>w_cmds$}  {:<w_branch$}  {}",
             row.uuid, row.started, row.last, row.cmds, row.branch, row.workspace
         ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn prune_sessions_output(target: &PruneTarget, active_session: &str) -> Result<String> {
+    let sessions_dir = {
+        let home = home::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
+        home.join(SESSIONS_DIRECTORY)
+    };
+
+    if !sessions_dir.exists() {
+        return Ok("No sessions found.".to_string());
+    }
+
+    let now = current_unix_timestamp();
+
+    let mut removed: Vec<String> = Vec::new();
+    let mut skipped_active = false;
+
+    for entry in std::fs::read_dir(&sessions_dir).with_context(|| {
+        format!(
+            "failed to read sessions directory {}",
+            sessions_dir.display()
+        )
+    })? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let uuid = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        let should_remove = match target {
+            PruneTarget::All => true,
+            PruneTarget::Uuid(id) => uuid == *id,
+            PruneTarget::Workspace(filter) => {
+                let meta = load_session_metadata(&path.join("metadata")).ok().flatten();
+                meta.map(|m| m.workspace.contains(filter.as_str()))
+                    .unwrap_or(false)
+            }
+            PruneTarget::OlderThan(days) => {
+                let threshold = days * 86400;
+                let meta = load_session_metadata(&path.join("metadata")).ok().flatten();
+                meta.map(|m| now.saturating_sub(m.last_updated_at) >= threshold)
+                    .unwrap_or(false)
+            }
+        };
+
+        if !should_remove {
+            continue;
+        }
+
+        if uuid == active_session {
+            skipped_active = true;
+            continue;
+        }
+
+        std::fs::remove_dir_all(&path)
+            .with_context(|| format!("failed to remove session directory {}", path.display()))?;
+        removed.push(uuid);
+    }
+
+    if removed.is_empty() && !skipped_active {
+        return Ok("No matching sessions found.".to_string());
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for uuid in &removed {
+        lines.push(format!("Removed: {uuid}"));
+    }
+    if skipped_active {
+        lines.push(format!("Skipped active session: {active_session}"));
     }
     Ok(lines.join("\n"))
 }

@@ -199,6 +199,51 @@ restart orangu
 
 \newpage
 
+## /prune
+
+Deletes session directories from `~/.orangu/sessions/`. The active session is never deleted regardless of strategy.
+
+With a UUID it deletes that single session. With `all` it deletes every session except the active one. With `--workspace <path>` (or `-w <path>`) it deletes all sessions whose recorded workspace path contains `<path>`. With `--older-than <days>` (or `-o <days>`) it deletes all sessions whose `last_updated_at` timestamp is more than `<days>` days in the past.
+
+Tab completion after `/prune ` cycles through session UUIDs newest-first.
+
+### Examples
+
+Delete a single session by UUID:
+
+```text
+/prune 550e8400-e29b-41d4-a716-446655440000
+```
+
+Delete all sessions except the active one:
+
+```text
+/prune all
+```
+
+Delete all sessions for a workspace:
+
+```text
+/prune -w myproject
+```
+
+Delete sessions not used in the last 30 days:
+
+```text
+/prune -o 30
+```
+
+Natural-language forms:
+
+```text
+prune session 550e8400-e29b-41d4-a716-446655440000
+prune all
+prune sessions in myproject
+prune sessions older than 30
+```
+
+\newpage
+
 ## /session
 
 Lists, switches, and opens sessions. See the Sessions section of the Terminal interface chapter for how sessions are stored, auto-resumed, and cleaned up.

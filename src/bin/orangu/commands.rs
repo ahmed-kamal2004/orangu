@@ -155,6 +155,13 @@ pub enum CloseTarget {
     PullRequest(u64),
 }
 
+pub enum PruneTarget {
+    Uuid(String),
+    Workspace(String),
+    OlderThan(u64),
+    All,
+}
+
 pub enum StashSubcommand {
     Push,
     Pop,
@@ -191,6 +198,7 @@ pub enum LocalCommand<'a> {
     Pull(Option<u64>),
     Comment(Option<(u64, CommentBody<'a>)>),
     Close(Option<CloseTarget>),
+    Prune(Option<PruneTarget>),
     CreatePullRequest,
     Rebase,
     Merge(Option<Cow<'a, str>>),
@@ -275,6 +283,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/pull" => Some(LocalCommand::Pull(None)),
         "/comment" => Some(LocalCommand::Comment(None)),
         "/close" => Some(LocalCommand::Close(None)),
+        "/prune" => Some(LocalCommand::Prune(None)),
         "/pull_request" => Some(LocalCommand::CreatePullRequest),
         "/review" => Some(LocalCommand::Review),
         "/push" => Some(LocalCommand::Push(false)),
@@ -331,6 +340,9 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/close ") {
                 return Some(LocalCommand::Close(parse_close_args(args.trim())));
+            }
+            if let Some(args) = input.strip_prefix("/prune ") {
+                return Some(LocalCommand::Prune(parse_prune_args(args.trim())));
             }
             if let Some(args) = input.strip_prefix("/merge ") {
                 let branch = args.trim();
@@ -716,6 +728,12 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "sessions",
     "list sessions",
     "show sessions",
+    // --- prune ---
+    "prune session ",
+    "prune sessions older than ",
+    "prune sessions in ",
+    "prune all",
+    "prune",
     // --- usage ---
     "usage",
     "show usage",
@@ -1098,6 +1116,25 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     ) {
         return Some(LocalCommand::Session(None));
     }
+    for prefix in ["prune session ", "prune sessions older than "] {
+        if let Some(rest) = strip_ascii_prefix(input, prefix) {
+            return Some(LocalCommand::Prune(parse_prune_args(rest.trim())));
+        }
+    }
+    if let Some(rest) = strip_ascii_prefix(input, "prune sessions in ") {
+        let path = rest.trim();
+        if !path.is_empty() {
+            return Some(LocalCommand::Prune(Some(PruneTarget::Workspace(
+                path.to_string(),
+            ))));
+        }
+    }
+    if matches_ci(input, &["prune all"]) {
+        return Some(LocalCommand::Prune(Some(PruneTarget::All)));
+    }
+    if matches_ci(input, &["prune"]) {
+        return Some(LocalCommand::Prune(None));
+    }
     if matches_ci(input, &["usage", "show usage"]) {
         return Some(LocalCommand::Usage);
     }
@@ -1361,6 +1398,36 @@ pub fn restore_usage_message() -> &'static str {
 
 pub fn grep_usage_message() -> &'static str {
     "Usage: /grep <pattern>. Use /help to see available commands."
+}
+
+pub fn parse_prune_args(input: &str) -> Option<PruneTarget> {
+    if input.eq_ignore_ascii_case("all") {
+        return Some(PruneTarget::All);
+    }
+    if let Some(rest) = input
+        .strip_prefix("--workspace ")
+        .or_else(|| input.strip_prefix("-w "))
+    {
+        let path = rest.trim();
+        if !path.is_empty() {
+            return Some(PruneTarget::Workspace(path.to_string()));
+        }
+        return None;
+    }
+    if let Some(rest) = input
+        .strip_prefix("--older-than ")
+        .or_else(|| input.strip_prefix("-o "))
+    {
+        return rest.trim().parse::<u64>().ok().map(PruneTarget::OlderThan);
+    }
+    if !input.is_empty() {
+        return Some(PruneTarget::Uuid(input.to_string()));
+    }
+    None
+}
+
+pub fn prune_usage_message() -> &'static str {
+    "Usage: /prune <uuid> | /prune --workspace <path> | /prune --older-than <days>. Use /help to see available commands."
 }
 
 pub fn add_file_usage_message() -> &'static str {
