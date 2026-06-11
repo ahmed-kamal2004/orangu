@@ -437,6 +437,8 @@ The review shows everything the current branch adds on top of the default branch
 
 The comparison is made against the merge base with the default branch. The default branch is detected in the usual order: `origin/main`, `origin/master`, `main`, then `master`. If the working tree has no changes against that base, `/review` reports that there is nothing to review and does not open the view.
 
+The branch must be **up to date (rebased)** against the default branch: when commits have landed on main/master that the branch has not incorporated, the review would run against stale code, so `/review` refuses to start and points at `/rebase` instead. The check uses the locally known base ref; nothing is fetched.
+
 ### Layout
 
 Above the bottom prompt frame (the status bar and input window, exactly as on the normal screen), the view is split into two panes separated by a single straight vertical line.
@@ -525,4 +527,88 @@ review
 review changes
 code review
 review branch
+```
+\newpage
+
+## /auto_review
+
+`/auto_review` runs an LLM-driven review of the changes on the current branch, in a full-screen, two-pane view modeled on `/review`. The model reviews the changes overall and each file by itself, sorts what it finds into the **Overall**, **Code**, **Security**, **Memory**, **Performance**, **Test Suite**, and **Documentation** categories, and marks each file approved or rejected. It is available inside a Git repository and requires a connected LLM server.
+
+Enter it with the `/auto_review` command, or the natural-language form `auto review`.
+
+### What is reviewed
+
+The same change set as `/review`: everything the current branch adds on top of the default branch — committed changes on the branch plus local uncommitted changes — measured against the merge base with the default branch (`origin/main`, `origin/master`, `main`, then `master`). If there is nothing to review, `/auto_review` reports that and does not open the view.
+
+Like `/review`, the branch must be **up to date (rebased)** against the default branch before the auto review starts: when the branch is behind main/master, the command refuses with `The branch is N commits behind <base>; run /rebase before reviewing.` — reviewing against stale code would waste the run and could approve changes that conflict with the newer base.
+
+### Layout
+
+The view opens with the tool header row at the top and under it the two panes, exactly like `/review`; the **status area** is the first row of the left pane, so the file checklist on the right keeps its full height. The input window stays empty — auto review takes no typed request.
+
+- **Header row** — the tool title (`Auto review: <branch>`) and the key help, with the `Files (n)` header of the right pane.
+- **Status area** — a highlighted bar across the left pane, just below the header, showing what is being worked on: the file (with its position in the file list), the category, the overall progress across all of the run's requests, and the total time spent on the run so far, e.g. `File: src/main.rs (2/5)  Category: Security  Progress: 8/26 (30%)  Time: 1m12s`. The time uses the same shortest form as the Thinking/Working timers (`5s`, `1m5s`, `1h2m3s`). After the run it shows `Done` (or `Cancelled`) with the time frozen at the run's total.
+- **Left pane** — below the status area, the **report**: one section per category (Overall, Code, Security, Memory, Performance, Test Suite, Documentation), each listing the findings collected so far, ending with the **Conclusion**. A category that has produced nothing yet shows `(pending)` while the run is in progress, and `No issues found` once it is done. The pane scrolls and pans independently.
+- **Right pane** — the checklist of changed files, one per row, as in `/review`. The file currently being reviewed is highlighted and its status box blinks a white dot until its review resolves to green or red. Once the run ends (or the whole-change pass starts) the highlight is cleared — nothing is being reviewed anymore; `Alt+j`/`Alt+k` bring it back to move through the list while browsing.
+
+```
+ Auto review: feature/x ...             |Files (3)
+ File: src/main.rs (2/3) ... Time: 45s  |[*] README.md
+ Overall                                |[o] src/main.rs  <- reviewing (blinks)
+   (pending)                            |[ ] src/git.rs
+ Code                                   |
+   - src/main.rs: unwrap may panic      |
+ Security                               |
+   (pending)                            |
+```
+
+### How the review runs
+
+The files are reviewed one at a time, in diff order. Each file's extension enables the categories that are scanned:
+
+- A file detected as **documentation** (`.md`, `.markdown`, `.rst`, `.adoc`, `.asciidoc`, `.txt`, `.org`, `.tex`) skips the code-related checks and is reviewed only for the **Documentation** category — a single request per file.
+- Every other file is scanned for all six per-file categories: Code, Security, Memory, Performance, Test Suite, then Documentation.
+
+For each enabled category, one focused request is sent to the LLM asking for a verdict plus findings for that category only, with the file's diff attached. The review is explicitly scoped to **the changes made** — the added, removed, and modified lines, and how they fit into the surrounding context — not to pre-existing content the change does not touch, and each category is capped at five short findings. The status area names the file and category being worked on and counts the overall progress — the total reflects only the enabled categories — while the status bar shows the usual thinking indicator.
+
+As each category review arrives, its findings are appended to the matching section in the left pane, each prefixed with the file path — so the report fills in category by category. When all of a file's categories have run, the file is automatically marked in the right pane — a **green dot** when every category passed, a **red dot** when any category rejected. Without an explicit verdict, a category passes only when its review found nothing. If a request fails — or its response carries neither a verdict nor findings (for example, truncated by the response cap) — the file keeps its white (unreviewed) box and the problem is noted under Overall; such a response never passes silently as a clean review.
+
+After the last file, a final pass reviews the change as a whole: the per-file verdicts and findings are summarized by the model into a few bullet points — how the changes fit together, readiness, risk, and common themes — under **Overall**.
+
+The report ends with the **Conclusion**, derived from the file statuses rather than from the model: `orangu approves this patch` when every file is approved, or `orangu rejects this patch` when any file was rejected or not reviewed — those files are then listed inside the Conclusion, grouped by their status (`Rejected: <file>`, `Not reviewed: <file>`).
+
+Each request runs in its own scratch exchange, **without tool definitions** and with a **capped response length** (`[orangu].review_max_tokens`, default `512`; `0` disables the cap) — a review can neither wander off into tool calls nor generate unbounded output, which keeps single requests fast and bounded even on slow local models. For deeper reviews with a thinking model, raise the cap (e.g. `2048`) so the thinking tokens do not eat the answer; the *Response-token caps* part of the Configuration chapter covers the trade-offs in depth. The diff leads each prompt, so a file's category requests share their prefix and llama.cpp's prompt cache can reuse the processed diff across them. The reviews are independent of each other and nothing is added to your chat session.
+
+While the model works, the status bar shows `Thinking (...)` until the first token arrives and then the live generation rate (`Working @ X.Y t/s (...)` on llama.cpp), so a stalled server and a slowly generating model are easy to tell apart.
+
+### Cancelling and exiting
+
+Press `Esc` `Esc` to **cancel** the auto review: the in-flight request is dropped, the run stops, and the report collected so far stays on screen for browsing. Press `Alt+x` (or `Esc` `Esc` again once the run is no longer in progress) to **exit**.
+
+On exit the report — every category with its findings (or `No issues found`), ending with the **Conclusion** and its patch verdict — is written to the output window and copied to the system clipboard. The per-file statuses are not listed separately: the rejected and not-reviewed files appear inside the Conclusion. If the clipboard cannot be reached (for example on a headless machine), a short note is shown instead.
+
+### Key bindings
+
+| Key | Action |
+| --- | --- |
+| `Esc` `Esc` | Cancel the auto review (the collected report stays open) |
+| `Alt+x` | Exit auto review mode; the report is copied to the clipboard |
+| `Esc` `Esc` (after the run) | Exit auto review mode, like `Alt+x` |
+| `Alt+j` / `Alt+k` | Move the highlight through the file list |
+| `Up` / `Down` | Scroll the report one line at a time |
+| `PageUp` / `PageDown` | Scroll the report by a full page |
+| `Left` / `Right` | Pan the report horizontally for long lines |
+
+The report can be scrolled while the run is still in progress.
+
+### Examples
+
+```text
+/auto_review
+```
+
+Natural-language form:
+
+```text
+auto review
 ```

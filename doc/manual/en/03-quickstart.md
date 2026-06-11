@@ -73,6 +73,7 @@ Then start with:
 /show_file README.md
 /build
 /add_file README.md
+/auto_review
 /amend "[#42] My feature"
 /branch main
 /branch -b feature/new
@@ -102,6 +103,8 @@ Then start with:
 /clear
 /quit
 ```
+
+Most of these are thin wrappers around the matching `git`/`gh` commands. Two open full-screen views instead: `/review` walks you through the branch's diff file by file for a manual review, and `/auto_review` has the connected model review the branch's changes by itself — per file and per category (Code, Security, Memory, Performance, Test Suite, Documentation) — and copies the resulting report to the clipboard on exit. Both are described in detail in the Core tools chapter.
 
 By default the tools operate on the current directory. Use `--workspace /path/to/project` to point **orangu** at another tree.
 

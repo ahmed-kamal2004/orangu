@@ -25,8 +25,8 @@ use crate::quotes::QUOTE_OPTIONS;
 use anyhow::{Context, Result, anyhow};
 use orangu::{
     config::{
-        CLIENT_SECTION, DEFAULT_PLATFORM, default_llm_max_tool_rounds, default_timeout,
-        default_virtual_width,
+        CLIENT_SECTION, DEFAULT_PLATFORM, default_code_max_tokens, default_llm_max_tool_rounds,
+        default_review_max_tokens, default_timeout, default_virtual_width,
     },
     llm::normalized_openai_endpoint,
 };
@@ -97,6 +97,8 @@ pub async fn run_init() -> Result<()> {
     // the loader would later reject.
     let timeout = prompt_number::<u64>("timeout", default_timeout())?;
     let max_tool_rounds = prompt_number::<usize>("max_tool_rounds", default_llm_max_tool_rounds())?;
+    let review_max_tokens = prompt_number::<u32>("review_max_tokens", default_review_max_tokens())?;
+    let code_max_tokens = prompt_number::<u32>("code_max_tokens", default_code_max_tokens())?;
     let quotes = prompt_with_options("quotes", "none", QUOTE_OPTIONS)?;
     let width = prompt_number::<usize>("width", default_virtual_width())?;
     let banner = prompt_with_options("banner", "left", BANNER_OPTIONS)?;
@@ -120,6 +122,12 @@ pub async fn run_init() -> Result<()> {
     }
     if max_tool_rounds != default_llm_max_tool_rounds() {
         client.push(format!("max_tool_rounds = {max_tool_rounds}"));
+    }
+    if review_max_tokens != default_review_max_tokens() {
+        client.push(format!("review_max_tokens = {review_max_tokens}"));
+    }
+    if code_max_tokens != default_code_max_tokens() {
+        client.push(format!("code_max_tokens = {code_max_tokens}"));
     }
     if quotes != "none" {
         client.push(format!("quotes = {quotes}"));

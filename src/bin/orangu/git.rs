@@ -1071,6 +1071,18 @@ pub fn pull_request_output(
     Ok(pr_sync_advice(&repo_root))
 }
 
+/// The number of commits on the default base branch (main/master) that the
+/// checked-out branch has not incorporated, together with the base ref name.
+/// `0` means the branch is up to date (rebased) against the base. Compared
+/// against the locally known base ref — nothing is fetched.
+pub fn behind_default_branch(workspace: &Path) -> Result<(usize, String)> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("review is only available inside a Git repository"))?;
+    let base_ref = git_find_base_ref(&repo_root)?;
+    let behind = git_commit_count(&repo_root, &format!("HEAD..{base_ref}"))?;
+    Ok((behind, base_ref))
+}
+
 /// Build the rebase/squash hint lines for the checked-out branch relative to the
 /// default base branch. Each entry is one line such as
 /// "branch is 2 commits behind origin/main; run /rebase". Returns an empty `Vec`
@@ -3614,6 +3626,35 @@ mod tests {
                 file.lines[0]
             );
         }
+    }
+
+    #[test]
+    fn behind_default_branch_counts_unincorporated_base_commits() {
+        let _env_lock = process_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let workspace = tempdir().expect("workspace");
+        let home = tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set_path("HOME", home.path());
+        init_git_for_test(workspace.path());
+
+        git_run(workspace.path(), &["checkout", "-B", "main"]);
+        std::fs::write(workspace.path().join("base.txt"), "base\n").expect("write base");
+        git_run(workspace.path(), &["add", "."]);
+        git_run(workspace.path(), &["commit", "-m", "Base commit"]);
+
+        // A fresh feature branch is up to date with main.
+        git_run(workspace.path(), &["checkout", "-b", "feature/behind-test"]);
+        let (behind, base_ref) = behind_default_branch(workspace.path()).expect("behind");
+        assert_eq!((behind, base_ref.as_str()), (0, "main"));
+
+        // A commit landing on main afterwards leaves the branch behind.
+        git_run(workspace.path(), &["checkout", "main"]);
+        std::fs::write(workspace.path().join("newer.txt"), "newer\n").expect("write newer");
+        git_run(workspace.path(), &["add", "."]);
+        git_run(workspace.path(), &["commit", "-m", "Newer base commit"]);
+        git_run(workspace.path(), &["checkout", "feature/behind-test"]);
+
+        let (behind, base_ref) = behind_default_branch(workspace.path()).expect("behind");
+        assert_eq!((behind, base_ref.as_str()), (1, "main"));
     }
 
     fn git_run(dir: &Path, args: &[&str]) {

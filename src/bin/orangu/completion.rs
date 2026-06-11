@@ -53,6 +53,7 @@ pub const COMMANDS: &[&str] = &[
     "/branch",
     "/restore",
     "/add_file",
+    "/auto_review",
     "/remove_file",
     "/move_file",
     "/cherry_pick",
@@ -1172,6 +1173,29 @@ pub fn comment_file_completion_candidates(prefix: &str) -> Option<(usize, Vec<St
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn auto_review_command_completes_from_the_command_list() {
+        // `/auto_review` is registered in the completion list...
+        assert!(COMMANDS.contains(&"/auto_review"));
+        // ...the inline ghost hint completes it once the prefix is unambiguous...
+        assert_eq!(command_ghost_suffix("/auto"), Some("_review"));
+        // ...and the natural-language ghost knows the alias too.
+        assert!(natural_language_ghost_candidates("auto re").contains(&"view"));
+    }
+
+    #[test]
+    fn every_completion_command_parses_as_a_slash_command() {
+        // The completion list is maintained by hand; every entry must stay a
+        // real command, so a typo or a renamed command fails here instead of
+        // silently completing to something the parser rejects.
+        for command in COMMANDS {
+            assert!(
+                crate::commands::parse_slash_command(command).is_some(),
+                "completion entry {command:?} does not parse as a slash command"
+            );
+        }
+    }
 
     #[test]
     fn session_path_completion_lists_matching_subdirectories() {

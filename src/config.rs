@@ -47,6 +47,10 @@ pub struct LlmConfiguration {
     pub api_key: Option<String>,
     pub request_timeout_seconds: u64,
     pub max_tool_rounds: usize,
+    /// Response-token cap for `/auto_review` requests; `0` disables the cap.
+    pub review_max_tokens: u32,
+    /// Response-token cap for normal chat/tool responses; `0` disables the cap.
+    pub code_max_tokens: u32,
     pub system_prompt: String,
 }
 
@@ -62,6 +66,19 @@ pub fn default_timeout() -> u64 {
 
 pub fn default_llm_max_tool_rounds() -> usize {
     10
+}
+
+/// Default `/auto_review` response cap: a verdict plus at most five one-line
+/// findings fits comfortably. Raise it (with model thinking enabled) for
+/// deeper reviews; `0` disables the cap.
+pub fn default_review_max_tokens() -> u32 {
+    512
+}
+
+/// Default chat-response cap: `0`, no cap — normal coding responses are
+/// open-ended.
+pub fn default_code_max_tokens() -> u32 {
+    0
 }
 
 pub fn parse_feedback_bool(s: &str) -> bool {
@@ -81,6 +98,9 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
     let timeout = parse_client_field(&client, "timeout", default_timeout)?;
     let max_tool_rounds =
         parse_client_field(&client, "max_tool_rounds", default_llm_max_tool_rounds)?;
+    let review_max_tokens =
+        parse_client_field(&client, "review_max_tokens", default_review_max_tokens)?;
+    let code_max_tokens = parse_client_field(&client, "code_max_tokens", default_code_max_tokens)?;
     let width = parse_client_field(&client, "width", default_virtual_width)?;
     let system_prompt = client.get("system_prompt").cloned().unwrap_or_default();
 
@@ -98,6 +118,8 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
             sections,
             timeout,
             max_tool_rounds,
+            review_max_tokens,
+            code_max_tokens,
             system_prompt,
             default_model,
         )?,
@@ -264,10 +286,13 @@ fn normalize_client_configuration(
     Ok(conf)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_llm_profiles(
     sections: HashMap<String, HashMap<String, String>>,
     timeout: u64,
     max_tool_rounds: usize,
+    review_max_tokens: u32,
+    code_max_tokens: u32,
     system_prompt: String,
     default_model: Option<String>,
 ) -> Result<HashMap<String, LlmConfiguration>> {
@@ -296,6 +321,8 @@ fn parse_llm_profiles(
                     api_key,
                     request_timeout_seconds: timeout,
                     max_tool_rounds,
+                    review_max_tokens,
+                    code_max_tokens,
                     system_prompt: system_prompt.clone(),
                 },
             ))
@@ -347,6 +374,31 @@ mod tests {
         assert_eq!(conf.llms["gemma"].max_tool_rounds, 12);
         // Absent platform defaults to GitHub.
         assert_eq!(conf.platform, "github");
+    }
+
+    #[test]
+    fn parses_review_and_code_max_tokens_with_defaults() {
+        // Absent keys: reviews capped at 512 tokens, chat responses uncapped.
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.llms["a"].review_max_tokens, 512);
+        assert_eq!(conf.llms["a"].code_max_tokens, 0);
+
+        // Explicit values land on every profile.
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\nreview_max_tokens = 2048\ncode_max_tokens = 4096\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.llms["a"].review_max_tokens, 2048);
+        assert_eq!(conf.llms["a"].code_max_tokens, 4096);
     }
 
     #[test]

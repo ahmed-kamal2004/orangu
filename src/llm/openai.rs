@@ -30,6 +30,9 @@ pub struct OpenAiClient {
     model: String,
     api_key: Option<String>,
     llama_cpp: bool,
+    /// Response-token cap sent as `max_tokens`; `None` leaves the server's
+    /// default in place.
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +42,8 @@ struct OpenAiChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [ToolDefinition]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timings_per_token: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,7 +129,18 @@ impl OpenAiClient {
             model: profile.model.clone(),
             api_key: profile.api_key.clone(),
             llama_cpp: profile.provider.eq_ignore_ascii_case("llama.cpp"),
+            // Normal chat/tool responses are capped by the configured
+            // `code_max_tokens` (0 = no cap).
+            max_tokens: (profile.code_max_tokens > 0).then_some(profile.code_max_tokens),
         })
+    }
+
+    /// Cap every chat response from this client at `max_tokens` tokens,
+    /// replacing any cap taken from the profile. `0` means no cap — a zero is
+    /// never sent to the server, which would request an empty response.
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = (max_tokens > 0).then_some(max_tokens);
+        self
     }
 
     pub async fn chat<F, G>(
@@ -144,6 +160,7 @@ impl OpenAiClient {
             messages,
             stream: true,
             tools: if tools.is_empty() { None } else { Some(tools) },
+            max_tokens: self.max_tokens,
             timings_per_token: self.llama_cpp.then_some(true),
             return_progress: self.llama_cpp.then_some(true),
         };
@@ -438,17 +455,67 @@ mod tests {
     }
 
     #[test]
+    fn max_tokens_follows_the_profile_and_zero_means_no_cap() {
+        let mut profile = LlmConfiguration {
+            provider: "llama.cpp".to_string(),
+            endpoint: "http://localhost:8100".to_string(),
+            model: "model".to_string(),
+            api_key: None,
+            request_timeout_seconds: 5,
+            max_tool_rounds: 10,
+            review_max_tokens: 512,
+            code_max_tokens: 0,
+            system_prompt: String::new(),
+        };
+
+        // `code_max_tokens = 0` leaves chat responses uncapped; a non-zero
+        // value caps them.
+        let client = OpenAiClient::from_profile(&profile).expect("client");
+        assert_eq!(client.max_tokens, None);
+        profile.code_max_tokens = 256;
+        let capped = OpenAiClient::from_profile(&profile).expect("client");
+        assert_eq!(capped.max_tokens, Some(256));
+
+        // `with_max_tokens` replaces the profile cap; zero clears it rather
+        // than requesting an empty response.
+        assert_eq!(capped.clone().with_max_tokens(512).max_tokens, Some(512));
+        assert_eq!(capped.with_max_tokens(0).max_tokens, None);
+    }
+
+    #[test]
+    fn chat_request_serializes_a_set_max_tokens() {
+        let request = OpenAiChatRequest {
+            model: "model",
+            messages: &[],
+            stream: true,
+            tools: None,
+            max_tokens: Some(512),
+            timings_per_token: None,
+            return_progress: None,
+        };
+
+        let encoded = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(
+            encoded.get("max_tokens"),
+            Some(&serde_json::Value::Number(512.into()))
+        );
+    }
+
+    #[test]
     fn llama_cpp_requests_native_stream_metrics() {
         let request = OpenAiChatRequest {
             model: "model",
             messages: &[],
             stream: true,
             tools: None,
+            max_tokens: None,
             timings_per_token: Some(true),
             return_progress: Some(true),
         };
 
         let encoded = serde_json::to_value(&request).expect("serialize request");
+        // An unset response cap is omitted from the request entirely.
+        assert_eq!(encoded.get("max_tokens"), None);
         assert_eq!(
             encoded.get("timings_per_token"),
             Some(&serde_json::Value::Bool(true))

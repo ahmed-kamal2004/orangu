@@ -69,6 +69,7 @@ orangu --config ./orangu.conf
 - `/show_file README.md`
 - `/build`
 - `/add_file README.md`
+- `/auto_review`
 - `/amend <message>`
 - `/branch main`
 - `/branch -b feature/new`

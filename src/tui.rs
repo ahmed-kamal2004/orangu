@@ -56,6 +56,7 @@ const CLIENT_LOGO_ART: &[&str] = &[
 const ORANGU_BROWN: &str = "\x1b[38;2;139;90;43m";
 const STATUS_GREEN: &str = "\x1b[38;2;80;200;120m";
 const STATUS_RED: &str = "\x1b[38;2;220;80;80m";
+const STATUS_WHITE: &str = "\x1b[38;2;230;230;230m";
 const ANSI_RESET: &str = "\x1b[0m";
 pub const FEEDBACK_OK: &str = "\x1b[38;2;80;200;120m●\x1b[0m";
 pub const FEEDBACK_ERR: &str = "\x1b[38;2;220;80;80m●\x1b[0m";
@@ -185,6 +186,7 @@ pub fn help_text() -> &'static str {
 /show_file [--hash] [--author] <path> [<ref>] Show a file; optional ref uses git show
 /build                                        Build the project
 /add_file <path>                              Stage a file or directory with git add
+/auto_review                                  LLM auto review of branch changes against main/master in a split view
 /amend <message>                              Rewrite the last commit message with git commit --amend
 /branch [<name>|-a|-b|-m|-d <name>]           List, switch, create, rename or delete a branch
 /cherry_pick <commit>                         Cherry-pick a commit onto the current branch
@@ -213,7 +215,7 @@ pub fn help_text() -> &'static str {
 /clear                                        Clear the current conversation
 /quit                                         Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `show manual`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `auto review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `show manual`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion.
 
@@ -436,18 +438,24 @@ pub fn render_working_status(frame: usize, rate: f64, elapsed: Duration) -> Stat
     }
 }
 
-fn format_elapsed_timer(elapsed: Duration) -> String {
+/// An elapsed duration in its shortest form — `5s`, `1m5s`, `1h2m3s` — as used
+/// by the Thinking/Working status timers and the auto review status area.
+pub fn format_status_duration(elapsed: Duration) -> String {
     let seconds = elapsed.as_secs();
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     let seconds = seconds % 60;
     if hours > 0 {
-        format!("({hours}h{minutes}m{seconds}s)")
+        format!("{hours}h{minutes}m{seconds}s")
     } else if minutes > 0 {
-        format!("({minutes}m{seconds}s)")
+        format!("{minutes}m{seconds}s")
     } else {
-        format!("({seconds}s)")
+        format!("{seconds}s")
     }
+}
+
+fn format_elapsed_timer(elapsed: Duration) -> String {
+    format!("({})", format_status_duration(elapsed))
 }
 
 fn available_output_rows(rows_above_prompt: usize, banner_rows: usize) -> usize {
@@ -1158,6 +1166,147 @@ fn render_review_feedback_panel(
     rows.join("\r\n")
 }
 
+/// Inputs for the `/auto_review` screen: the categorized report in the left
+/// pane — topped by the status area — and the file checklist (with auto-set
+/// status dots) in the right pane.
+pub struct AutoReviewScreenArgs<'a> {
+    pub files: &'a [ReviewEntry],
+    /// Index of the file highlighted in the right pane: the one being reviewed
+    /// while the run is in progress, or the one picked with Alt+j/Alt+k while
+    /// browsing afterwards. `None` shows no highlight (the run has ended and
+    /// nothing has been picked).
+    pub selected: Option<usize>,
+    /// The rendered report lines shown in the left pane.
+    pub report_lines: &'a [String],
+    pub scroll: usize,
+    pub x_offset: usize,
+    /// The status area's text: the file and category being worked on, e.g.
+    /// `File: src/main.rs (2/5)  Category: Security`.
+    pub status: &'a str,
+    /// Index of the file whose status box shows the white "being reviewed"
+    /// dot. The caller pulses this between `Some` and `None` on its render
+    /// tick, which makes the dot blink.
+    pub reviewing: Option<usize>,
+    pub current_model: &'a str,
+    pub prompt_branch: Option<&'a str>,
+    pub left_status: Option<StatusFragment>,
+    pub pending_count: usize,
+    pub actual_width: usize,
+    pub actual_height: usize,
+}
+
+/// Number of scrollable body rows in the auto review report pane: one less
+/// than the `/review` panes, since the status area takes the left pane's first
+/// body row (the input window is always empty in auto review mode).
+pub fn auto_review_pane_body_height(
+    actual_height: usize,
+    prompt_branch: Option<&str>,
+    actual_width: usize,
+) -> usize {
+    review_pane_body_height(actual_height, "", prompt_branch, actual_width)
+        .saturating_sub(1)
+        .max(1)
+}
+
+pub fn render_auto_review_screen(args: AutoReviewScreenArgs<'_>) -> String {
+    let width = args.actual_width.max(1);
+    let height = args.actual_height.max(1);
+
+    // Reserve the bottom prompt frame exactly like `/review`. Auto review takes
+    // no typed request, so the input window stays empty.
+    let prompt_prefix = prompt_prefix(args.prompt_branch);
+    let input_lines = wrapped_input_lines("", width, &prompt_prefix);
+    let prompt_frame_height = input_lines.len() + 3;
+    let pane_rows = height.saturating_sub(prompt_frame_height).max(2);
+
+    let mut screen = render_auto_review_panes(&args, width, pane_rows).join("\r\n");
+    screen.push_str("\r\n");
+    screen.push_str(&render_prompt_frame(PromptFrameArgs {
+        header_height: pane_rows,
+        current_model: args.current_model,
+        left_status: args.left_status,
+        pending_count: args.pending_count,
+        prompt_prefix: &prompt_prefix,
+        input: "",
+        cursor: 0,
+        ghost: "",
+        height,
+        actual_width: width,
+    }));
+    screen
+}
+
+/// Render the two auto review panes (report + file checklist) as exactly
+/// `pane_rows` rows: one header row plus `pane_rows - 1` body rows. The first
+/// body row of the left pane is the status area — it stays inside the left
+/// pane, so the file checklist keeps every body row on the right.
+fn render_auto_review_panes(
+    args: &AutoReviewScreenArgs<'_>,
+    width: usize,
+    pane_rows: usize,
+) -> Vec<String> {
+    let right_width = review_right_width(args.files, width);
+    let left_width = width.saturating_sub(right_width + 1).max(1);
+    let body_height = pane_rows.saturating_sub(1);
+
+    // Keep the highlighted file (if any) visible in the right pane.
+    let anchor = args.selected.unwrap_or(0);
+    let list_start = if anchor >= body_height {
+        anchor - body_height + 1
+    } else {
+        0
+    };
+
+    let title = format!(
+        "Auto review: {}  Esc Esc Cancel  Alt+x Exit",
+        args.prompt_branch.unwrap_or("(detached HEAD)"),
+    );
+    let right_header = format!("Files ({})", args.files.len());
+
+    let mut rows: Vec<String> = Vec::with_capacity(pane_rows);
+    rows.push(format!(
+        "{}{}{}",
+        review_pane_cell(&title, 0, left_width),
+        REVIEW_SEPARATOR,
+        review_pane_cell(&right_header, 0, right_width),
+    ));
+
+    for row in 0..body_height {
+        let left = if row == 0 {
+            // The status area: a highlighted bar across the left pane showing
+            // which file and category is being worked on.
+            review_highlight(&review_pane_cell(args.status, 0, left_width))
+        } else {
+            match args.report_lines.get(args.scroll + row - 1) {
+                Some(line) => review_pane_cell(line, args.x_offset, left_width),
+                None => review_pane_cell("", 0, left_width),
+            }
+        };
+        let file_index = list_start + row;
+        let right = match args.files.get(file_index) {
+            Some(file) => {
+                // The file under review blinks a white dot in its status box.
+                let status_box = if args.reviewing == Some(file_index) {
+                    format!("[{STATUS_WHITE}●{ANSI_RESET}]")
+                } else {
+                    review_status_box(file.status)
+                };
+                let entry = format!("{status_box} {}", file.path);
+                let cell = review_pane_cell(&entry, 0, right_width);
+                if args.selected == Some(file_index) {
+                    review_highlight(&cell)
+                } else {
+                    cell
+                }
+            }
+            None => review_pane_cell("", 0, right_width),
+        };
+        rows.push(format!("{left}{REVIEW_SEPARATOR}{right}"));
+    }
+
+    rows
+}
+
 /// Render `text` as a user-input line — a dark background spanning the full
 /// width — matching how submitted prompts appear in the main output window.
 pub fn render_user_input_line(text: &str, width: usize) -> String {
@@ -1298,10 +1447,12 @@ impl Completer for OranguHelper {
 #[cfg(test)]
 mod tests {
     use super::{
-        ANSI_RESET, ReviewEntry, ReviewScreenArgs, ReviewStatus, StatusFragment, THINKING_TEXT,
-        TranscriptLine, USER_INPUT_BACKGROUND, WORKING_TEXT, available_output_rows, prompt_prefix,
-        render_review_screen, render_status_line, render_thinking_status, render_transcript_line,
-        render_working_status, review_right_width, wrapped_input_lines,
+        ANSI_RESET, AutoReviewScreenArgs, ReviewEntry, ReviewScreenArgs, ReviewStatus,
+        StatusFragment, THINKING_TEXT, TranscriptLine, USER_INPUT_BACKGROUND, WORKING_TEXT,
+        auto_review_pane_body_height, available_output_rows, format_status_duration, prompt_prefix,
+        render_auto_review_screen, render_review_screen, render_status_line,
+        render_thinking_status, render_transcript_line, render_working_status,
+        review_pane_body_height, review_right_width, wrapped_input_lines,
     };
     use std::time::Duration;
 
@@ -1339,6 +1490,93 @@ mod tests {
             actual_width,
             actual_height,
         }
+    }
+
+    fn auto_review_args<'a>(
+        files: &'a [ReviewEntry],
+        report_lines: &'a [String],
+        actual_width: usize,
+        actual_height: usize,
+    ) -> AutoReviewScreenArgs<'a> {
+        AutoReviewScreenArgs {
+            files,
+            selected: None,
+            reviewing: None,
+            report_lines,
+            scroll: 0,
+            x_offset: 0,
+            status: "File: a.rs (1/1)  Category: Code  Progress: 0/7 (0%)  Time: 5s",
+            current_model: "model",
+            prompt_branch: Some("feature/x"),
+            left_status: None,
+            pending_count: 0,
+            actual_width,
+            actual_height,
+        }
+    }
+
+    #[test]
+    fn auto_review_screen_places_the_status_area_below_the_header() {
+        // The path is longer than the `Files (1)` header, so the right pane is
+        // wide enough to show the header unclipped.
+        let files = vec![review_entry("src/main.rs", ReviewStatus::Approved, &[])];
+        let report: Vec<String> = vec!["Overall".to_string(), "  - ready".to_string()];
+        let screen = render_auto_review_screen(auto_review_args(&files, &report, 80, 12));
+        let rows: Vec<&str> = screen.split("\r\n").collect();
+
+        // The header row comes first (tool title + file-list header); the
+        // status area sits below it, inside the left pane, with the file
+        // checklist continuing alongside on the right.
+        assert!(rows[0].contains("Auto review: feature/x"), "{:?}", rows[0]);
+        assert!(rows[0].contains("Files (1)"), "{:?}", rows[0]);
+        assert!(rows[1].contains("Category: Code"), "{:?}", rows[1]);
+        assert!(rows[1].contains("Time: 5s"), "{:?}", rows[1]);
+        assert!(rows[1].contains("src/main.rs"), "{:?}", rows[1]);
+
+        // The report fills the left pane below the status area.
+        assert!(rows[2].contains("Overall"), "{:?}", rows[2]);
+        assert!(!rows[2].contains("src/main.rs"), "{:?}", rows[2]);
+        assert!(rows[3].contains("  - ready"), "{:?}", rows[3]);
+    }
+
+    #[test]
+    fn auto_review_reviewing_file_shows_a_white_dot() {
+        // Match the box opening and the colored dot; the trailing reset is
+        // rewritten when the row carries the selection highlight.
+        let white_dot = format!("[{}●", super::STATUS_WHITE);
+        let files = vec![review_entry("src/main.rs", ReviewStatus::Unreviewed, &[])];
+        let report: Vec<String> = Vec::new();
+
+        // The blink-off phase (or no file under review) keeps the empty box.
+        let screen = render_auto_review_screen(auto_review_args(&files, &report, 80, 12));
+        assert!(screen.contains("[ ] src/main.rs"), "{screen:?}");
+        assert!(!screen.contains(&white_dot), "{screen:?}");
+
+        // The blink-on phase paints the white "being reviewed" dot.
+        let mut args = auto_review_args(&files, &report, 80, 12);
+        args.reviewing = Some(0);
+        let screen = render_auto_review_screen(args);
+        assert!(screen.contains(&white_dot), "{screen:?}");
+    }
+
+    #[test]
+    fn auto_review_pane_body_height_reserves_the_status_row() {
+        // One row less than the `/review` panes (the status area takes it),
+        // never less than one.
+        let review = review_pane_body_height(24, "", Some("main"), 80);
+        assert_eq!(
+            auto_review_pane_body_height(24, Some("main"), 80),
+            review - 1
+        );
+        assert_eq!(auto_review_pane_body_height(1, Some("main"), 80), 1);
+    }
+
+    #[test]
+    fn format_status_duration_uses_the_shortest_form() {
+        assert_eq!(format_status_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_status_duration(Duration::from_secs(59)), "59s");
+        assert_eq!(format_status_duration(Duration::from_secs(65)), "1m5s");
+        assert_eq!(format_status_duration(Duration::from_secs(3723)), "1h2m3s");
     }
 
     #[test]

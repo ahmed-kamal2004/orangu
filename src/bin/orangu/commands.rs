@@ -135,6 +135,8 @@ pub enum CommandOutcome {
     ),
     /// Enter the interactive `/review` mode with a collected branch diff.
     Review(ReviewLaunch),
+    /// Enter the LLM-driven `/auto_review` mode with a collected branch diff.
+    AutoReview(ReviewLaunch),
     /// Enter the built-in manual viewer.
     Manual,
 }
@@ -200,6 +202,7 @@ pub enum LocalCommand<'a> {
     Diff(Option<Cow<'a, str>>),
     Grep(Option<Cow<'a, str>>),
     Review,
+    AutoReview,
     Status,
     Log(Option<u64>),
     Pull(Option<u64>),
@@ -296,6 +299,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/prune" => Some(LocalCommand::Prune(None)),
         "/pull_request" => Some(LocalCommand::CreatePullRequest),
         "/review" => Some(LocalCommand::Review),
+        "/auto_review" => Some(LocalCommand::AutoReview),
         "/push" => Some(LocalCommand::Push(false)),
         "/rebase" => Some(LocalCommand::Rebase),
         "/remove_file" => Some(LocalCommand::RemoveFile(None)),
@@ -579,6 +583,8 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "review changes",
     "code review",
     "review branch",
+    // --- auto review ---
+    "auto review",
     // --- status ---
     "status",
     "show status",
@@ -848,6 +854,9 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         &["review", "review changes", "code review", "review branch"],
     ) {
         return Some(LocalCommand::Review);
+    }
+    if matches_ci(input, &["auto review"]) {
+        return Some(LocalCommand::AutoReview);
     }
     if matches_ci(input, &["status", "show status", "git status"]) {
         return Some(LocalCommand::Status);
@@ -1843,6 +1852,16 @@ mod tests {
             assert!(
                 matches!(parse_local_command(input), Some(LocalCommand::Review)),
                 "expected {input:?} to parse as Review"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_auto_review_commands() {
+        for input in ["/auto_review", "auto review", "Auto Review"] {
+            assert!(
+                matches!(parse_local_command(input), Some(LocalCommand::AutoReview)),
+                "expected {input:?} to parse as AutoReview"
             );
         }
     }

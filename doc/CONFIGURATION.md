@@ -19,6 +19,8 @@ server = main-server
 model = ggml-org/gemma-4-E4B-it-GGUF
 timeout = 1800
 max_tool_rounds = 10
+review_max_tokens = 512
+code_max_tokens = 0
 ```
 
 | Key | Required | Description |
@@ -27,6 +29,8 @@ max_tool_rounds = 10
 | `model` | No | General default model name. Used unless the selected server defines its own `model`, which takes precedence |
 | `timeout` | No | Request timeout in seconds. Defaults to `1800` |
 | `max_tool_rounds` | No | Maximum tool-calling turns per prompt. Defaults to `10` |
+| `review_max_tokens` | No | Response-token cap for each `/auto_review` request. Defaults to `512`; `0` disables the cap. Raise it (e.g. `2048`) when the review model thinks before answering |
+| `code_max_tokens` | No | Response-token cap for normal chat and tool responses. Defaults to `0` (no cap) |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width for the output canvas. Source lines from `/show_file` are laid out at this width and can be panned horizontally. Defaults to `512` |
 | `banner` | No | Horizontal placement of the header banner. Defaults to `left`. Options: `left`, `center`, `right` |

@@ -47,6 +47,8 @@ server = main-server
 model = ggml-org/gemma-4-E4B-it-GGUF
 timeout = 1800
 max_tool_rounds = 10
+review_max_tokens = 512
+code_max_tokens = 0
 ```
 
 | Key | Required | Description |
@@ -55,6 +57,8 @@ max_tool_rounds = 10
 | `model` | No | General default model name. Used unless the selected server defines its own `model`, which takes precedence |
 | `timeout` | No | Request timeout in seconds. The default is `1800` |
 | `max_tool_rounds` | No | Maximum tool-calling turns before the client aborts the prompt |
+| `review_max_tokens` | No | Response-token cap for each `/auto_review` request. Defaults to `512`; `0` disables the cap. Raise it (e.g. `2048`) when the review model thinks before answering |
+| `code_max_tokens` | No | Response-token cap for normal chat and tool responses. Defaults to `0` (no cap) |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width in characters. Controls the layout canvas for `/show_file` output. Defaults to `512` |
 | `banner` | No | Horizontal placement of the banner. Defaults to `left`. Options: `left`, `center`, `right` |
@@ -63,6 +67,49 @@ max_tool_rounds = 10
 | `auto_squash` | No | Automatically squash commits before `/pull_request` if more than one commit is ahead of the base. Defaults to `off`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `terminal` | No | Launch command used to open `$EDITOR` for terminal editors in a new window for `/open_file` (for example `xterm -e` or `kitty`). When unset, a terminal emulator is auto-detected |
 | `platform` | No | Code-hosting platform driven for `/pull`, `/pull_request`, `/merge`, and `/comment`. Defaults to `github` (uses the `gh` CLI). Options: `github`, `gitlab` (uses the `glab` CLI) |
+
+### Response-token caps
+
+`review_max_tokens` and `code_max_tokens` bound how long a model response may
+get. Each is sent to the server as the `max_tokens` field of the chat
+completion request, so the server stops generating when the cap is reached —
+the request does not fail, the response is simply cut off at that point. A
+value of `0` disables the cap entirely: no `max_tokens` field is sent and the
+server's own default applies. Like `timeout` and `max_tool_rounds`, both keys
+are client-wide and apply to every configured server.
+
+The two caps cover the two kinds of request the client makes:
+
+- **`review_max_tokens`** applies to every `/auto_review` request — the
+  per-file category reviews and the final whole-change pass. The default of
+  `512` fits the requested format (a verdict plus at most five one-line
+  findings) comfortably, and exists so a review can never generate unbounded
+  output: a runaway or endlessly deliberating model is cut off rather than
+  stalling the run.
+- **`code_max_tokens`** applies to the normal conversation — prompts typed at
+  the input window, including tool-calling turns. It defaults to `0` (no cap)
+  because coding answers are open-ended: explanations, diffs, and file
+  contents can legitimately be long. Set it only when a model tends to ramble
+  or you want a hard latency bound per response.
+
+**Reasoning ("thinking") models need a larger review cap.** A model's hidden
+thinking tokens count against `max_tokens`, so with the default `512` a model
+that deliberates at length can be cut off before it emits its verdict. Such a
+truncated review is handled safely — a response with no verdict and no
+findings is recorded under **Overall** as a failed category review and the
+file keeps its white (unreviewed) box, so a truncation can never silently
+approve a file — but the review is wasted. When reviewing with thinking
+enabled, raise the cap so the answer survives the thinking:
+
+```ini
+[orangu]
+review_max_tokens = 2048
+```
+
+Conversely, for the fastest reviews disable thinking on the server (for
+llama.cpp: `--reasoning-budget 0` together with
+`--chat-template-kwargs '{"enable_thinking": false}'`) and keep the default
+`512` — the cap then almost never binds and only guards against runaways.
 
 ## Server sections
 
