@@ -846,8 +846,8 @@ async fn run() -> Result<()> {
                 )
                 .await?;
 
-                // On exit, print the report to the output window and copy it to
-                // the system clipboard.
+                // On exit, print the rendered report to the output window and
+                // copy its raw Markdown to the system clipboard.
                 let (lines, clipboard) = auto_review_exit_output(&state);
                 for line in &lines {
                     output_state.push_text(line);
@@ -2441,62 +2441,78 @@ impl AutoReviewState {
         )
     }
 
-    /// The patch verdict for the `Conclusion` category: `orangu approves this
-    /// patch` when every file is approved, otherwise `orangu rejects this
-    /// patch` followed by the rejected and not-reviewed files, grouped by
-    /// their status.
-    fn conclusion_lines(&self) -> Vec<String> {
+    /// The patch verdict opening the `Conclusion` category: `orangu approves
+    /// this patch` when every file is approved, otherwise `orangu rejects
+    /// this patch`.
+    fn conclusion_verdict(&self) -> &'static str {
         let all_approved = self
             .files
             .iter()
             .all(|file| file.status == ReviewStatus::Approved);
-        let mut lines = vec![if all_approved {
-            "orangu approves this patch".to_string()
+        if all_approved {
+            "orangu approves this patch"
         } else {
-            "orangu rejects this patch".to_string()
-        }];
+            "orangu rejects this patch"
+        }
+    }
+
+    /// The rejected and not-reviewed files listed under the `Conclusion`
+    /// verdict (in Markdown bold), grouped by their status, rejected first.
+    /// Empty when every file is approved.
+    fn conclusion_findings(&self) -> Vec<String> {
+        let mut lines = Vec::new();
         for file in &self.files {
             if file.status == ReviewStatus::Rejected {
-                lines.push(format!("Rejected: {}", file.path));
+                lines.push(format!("Rejected: **{}**", file.path));
             }
         }
         for file in &self.files {
             if file.status == ReviewStatus::Unreviewed {
-                lines.push(format!("Not reviewed: {}", file.path));
+                lines.push(format!("Not reviewed: **{}**", file.path));
             }
         }
         lines
     }
 
-    /// The left-pane report: each category as a bold header followed by its
-    /// findings, with a placeholder while the run is still in progress, ending
-    /// with the synthesized `Conclusion`.
+    /// The left-pane report, rendered for the console: each category as a
+    /// bold heading (the `##` markers of the Markdown report are consumed,
+    /// not displayed) followed by its findings as a bullet list with the
+    /// `**file**` names resolved to bold, with a dimmed placeholder while the
+    /// run is still in progress, ending with the synthesized `Conclusion`.
     fn report_lines(&self) -> Vec<String> {
         let pending = !(self.done || self.cancelled);
         let mut lines = Vec::new();
         for (index, name) in AUTO_REVIEW_CATEGORIES.iter().enumerate() {
             lines.push(format!("\x1b[1m{name}\x1b[0m"));
+            lines.push(String::new());
             let section = &self.sections[index];
             if section.is_empty() {
-                let placeholder = if pending {
-                    "(pending)"
+                if pending {
+                    lines.push("\x1b[2m(pending)\x1b[0m".to_string());
                 } else {
-                    "No issues found"
-                };
-                lines.push(format!("\x1b[2m  {placeholder}\x1b[0m"));
+                    lines.push("No issues found".to_string());
+                }
             } else {
                 for finding in section {
-                    lines.push(format!("  - {finding}"));
+                    lines.push(render_markdown_for_console(&format!("- {finding}")));
                 }
             }
             lines.push(String::new());
         }
         lines.push(format!("\x1b[1m{AUTO_REVIEW_CONCLUSION}\x1b[0m"));
+        lines.push(String::new());
         if pending {
-            lines.push("\x1b[2m  (pending)\x1b[0m".to_string());
+            lines.push("\x1b[2m(pending)\x1b[0m".to_string());
         } else {
-            for line in self.conclusion_lines() {
-                lines.push(format!("  - {line}"));
+            // The verdict stands alone in bold; the affected files follow as
+            // a bullet list.
+            lines.push(format!("\x1b[1m{}\x1b[0m", self.conclusion_verdict()));
+            let findings = self.conclusion_findings();
+            if !findings.is_empty() {
+                lines.push(String::new());
+                for line in findings {
+                    lines.push(render_markdown_for_console(&format!("- {line}")));
+                }
             }
         }
         lines
@@ -2538,15 +2554,15 @@ impl AutoReviewState {
         });
     }
 
-    /// Append one category review's findings — prefixed with the file's path —
-    /// to the matching report section, so the left pane fills in category by
-    /// category as the run progresses.
+    /// Append one category review's findings — prefixed with the file's path
+    /// in Markdown bold — to the matching report section, so the left pane
+    /// fills in category by category as the run progresses.
     fn apply_category_result(&mut self, index: usize, section: usize, findings: Vec<String>) {
         let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
             return;
         };
         for finding in findings {
-            self.sections[section].push(format!("{path}: {finding}"));
+            self.sections[section].push(format!("**{path}**: {finding}"));
         }
     }
 
@@ -2562,7 +2578,7 @@ impl AutoReviewState {
     fn record_failure(&mut self, index: usize, category: &str, error: &Error) {
         if let Some(file) = self.files.get(index) {
             self.sections[0].push(format!(
-                "{}: {category} review failed: {error:#}",
+                "**{}**: {category} review failed: {error:#}",
                 file.path
             ));
         }
@@ -2575,7 +2591,7 @@ impl AutoReviewState {
     fn record_unparseable(&mut self, index: usize, category: &str) {
         if let Some(file) = self.files.get(index) {
             self.sections[0].push(format!(
-                "{}: {category} review returned no verdict and no findings",
+                "**{}**: {category} review returned no verdict and no findings",
                 file.path
             ));
         }
@@ -2758,39 +2774,55 @@ fn build_auto_review_overall_prompt(state: &AutoReviewState) -> String {
     )
 }
 
-/// Build the auto review exit report: the colorized lines for the output
-/// window, and the Markdown report copied to the clipboard. The report is
-/// just the categories — `Overall` through `Documentation`, then the
-/// `Conclusion` with the patch verdict and any rejected or not-reviewed files;
-/// the per-file statuses live in the `Conclusion`, not in a header.
+/// Build the auto review exit report: the lines rendered for the output
+/// window, and the raw Markdown copied to the clipboard. In the Markdown,
+/// each category — `Overall` through `Documentation` — is a `##` heading
+/// followed by its findings as a bullet list with the file names in bold,
+/// ending with the `Conclusion` and the patch verdict plus any rejected or
+/// not-reviewed files; the per-file statuses live in the `Conclusion`, not
+/// in a header. The rendered lines display the same report with the Markdown
+/// syntax consumed: bold category headings without the `##` markers, and the
+/// `**file**` names resolved to bold.
 fn auto_review_exit_output(state: &AutoReviewState) -> (Vec<String>, String) {
-    // The two variants stay in lockstep: `lines` (with ANSI styling) goes to
-    // the output window, `markdown` is what lands on the clipboard — each
-    // category as a `##` heading followed by its findings as a bullet list.
+    // The two variants stay in lockstep: `lines` goes to the output window,
+    // `markdown` is what lands on the clipboard.
     let mut lines = Vec::new();
     let mut markdown = Vec::new();
     for (index, name) in AUTO_REVIEW_CATEGORIES.iter().enumerate() {
         lines.push(format!("\x1b[1m{name}\x1b[0m"));
         markdown.push(format!("## {name}"));
+        lines.push(String::new());
         markdown.push(String::new());
         let section = &state.sections[index];
         if section.is_empty() {
-            lines.push("  No issues found".to_string());
+            lines.push("No issues found".to_string());
             markdown.push("No issues found".to_string());
         } else {
             for finding in section {
-                lines.push(format!("  - {finding}"));
+                lines.push(render_markdown_for_console(&format!("- {finding}")));
                 markdown.push(format!("- {finding}"));
             }
         }
+        lines.push(String::new());
         markdown.push(String::new());
     }
     lines.push(format!("\x1b[1m{AUTO_REVIEW_CONCLUSION}\x1b[0m"));
     markdown.push(format!("## {AUTO_REVIEW_CONCLUSION}"));
+    lines.push(String::new());
     markdown.push(String::new());
-    for line in state.conclusion_lines() {
-        lines.push(format!("  - {line}"));
-        markdown.push(format!("- {line}"));
+    // The verdict stands alone in bold; the affected files follow as a
+    // bullet list.
+    let verdict = state.conclusion_verdict();
+    lines.push(format!("\x1b[1m{verdict}\x1b[0m"));
+    markdown.push(format!("**{verdict}**"));
+    let findings = state.conclusion_findings();
+    if !findings.is_empty() {
+        lines.push(String::new());
+        markdown.push(String::new());
+        for line in findings {
+            lines.push(render_markdown_for_console(&format!("- {line}")));
+            markdown.push(format!("- {line}"));
+        }
     }
     (lines, markdown.join("\n"))
 }
@@ -4994,13 +5026,14 @@ mod tests {
             files: vec![entry("a.rs"), entry("b.rs")],
         });
 
-        // Findings land in the requested category, prefixed with the path.
+        // Findings land in the requested category, prefixed with the path in
+        // Markdown bold.
         state.apply_category_result(1, 1, vec!["broken loop".to_string()]);
         state.apply_category_result(1, 6, vec!["update the manual".to_string()]);
-        assert_eq!(state.sections[1], vec!["b.rs: broken loop".to_string()]);
+        assert_eq!(state.sections[1], vec!["**b.rs**: broken loop".to_string()]);
         assert_eq!(
             state.sections[6],
-            vec!["b.rs: update the manual".to_string()]
+            vec!["**b.rs**: update the manual".to_string()]
         );
 
         // The dot is set once per file, after all categories have run.
@@ -5122,7 +5155,7 @@ mod tests {
         state.record_unparseable(0, "Security");
         assert_eq!(
             state.sections[0],
-            vec!["a.rs: Security review returned no verdict and no findings".to_string()]
+            vec!["**a.rs**: Security review returned no verdict and no findings".to_string()]
         );
     }
 
@@ -5186,34 +5219,51 @@ mod tests {
             }],
         });
         state.sections[0].push("ready to merge".to_string());
-        state.sections[1].push("a.rs: tighten error handling".to_string());
+        state.sections[1].push("**a.rs**: tighten error handling".to_string());
         state.finish();
 
         // The report is just the categories — no header and no per-file
-        // status lines — ending with the Conclusion verdict.
+        // status lines — ending with the Conclusion verdict. The output-window
+        // lines display the Markdown rendered: bold headings without the `##`
+        // markers, `**file**` resolved to bold.
         let (lines, clipboard) = auto_review_exit_output(&state);
         assert_eq!(
             lines,
             vec![
                 "\x1b[1mOverall\x1b[0m".to_string(),
-                "  - ready to merge".to_string(),
+                String::new(),
+                "- ready to merge".to_string(),
+                String::new(),
                 "\x1b[1mCode\x1b[0m".to_string(),
-                "  - a.rs: tighten error handling".to_string(),
+                String::new(),
+                "- \x1b[1ma.rs\x1b[22m: tighten error handling".to_string(),
+                String::new(),
                 "\x1b[1mSecurity\x1b[0m".to_string(),
-                "  No issues found".to_string(),
+                String::new(),
+                "No issues found".to_string(),
+                String::new(),
                 "\x1b[1mMemory\x1b[0m".to_string(),
-                "  No issues found".to_string(),
+                String::new(),
+                "No issues found".to_string(),
+                String::new(),
                 "\x1b[1mPerformance\x1b[0m".to_string(),
-                "  No issues found".to_string(),
+                String::new(),
+                "No issues found".to_string(),
+                String::new(),
                 "\x1b[1mTest Suite\x1b[0m".to_string(),
-                "  No issues found".to_string(),
+                String::new(),
+                "No issues found".to_string(),
+                String::new(),
                 "\x1b[1mDocumentation\x1b[0m".to_string(),
-                "  No issues found".to_string(),
+                String::new(),
+                "No issues found".to_string(),
+                String::new(),
                 "\x1b[1mConclusion\x1b[0m".to_string(),
-                "  - orangu approves this patch".to_string(),
+                String::new(),
+                "\x1b[1morangu approves this patch\x1b[0m".to_string(),
             ]
         );
-        // The clipboard copy is the same report formatted as Markdown.
+        // The clipboard copy is the raw Markdown report.
         assert_eq!(
             clipboard,
             "## Overall\n\
@@ -5222,7 +5272,7 @@ mod tests {
              \n\
              ## Code\n\
              \n\
-             - a.rs: tighten error handling\n\
+             - **a.rs**: tighten error handling\n\
              \n\
              ## Security\n\
              \n\
@@ -5246,7 +5296,7 @@ mod tests {
              \n\
              ## Conclusion\n\
              \n\
-             - orangu approves this patch"
+             **orangu approves this patch**"
         );
     }
 
@@ -5272,14 +5322,14 @@ mod tests {
         });
 
         // Any rejected or not-reviewed file rejects the patch; the files are
-        // listed grouped by their status, rejected first.
+        // listed in bold, grouped by their status, rejected first.
+        assert_eq!(state.conclusion_verdict(), "orangu rejects this patch");
         assert_eq!(
-            state.conclusion_lines(),
+            state.conclusion_findings(),
             vec![
-                "orangu rejects this patch".to_string(),
-                "Rejected: c.rs".to_string(),
-                "Rejected: d.rs".to_string(),
-                "Not reviewed: b.rs".to_string(),
+                "Rejected: **c.rs**".to_string(),
+                "Rejected: **d.rs**".to_string(),
+                "Not reviewed: **b.rs**".to_string(),
             ]
         );
 
@@ -5287,10 +5337,8 @@ mod tests {
         let state = AutoReviewState::new(ReviewLaunch {
             files: vec![entry("a.rs", ReviewStatus::Approved)],
         });
-        assert_eq!(
-            state.conclusion_lines(),
-            vec!["orangu approves this patch".to_string()]
-        );
+        assert_eq!(state.conclusion_verdict(), "orangu approves this patch");
+        assert!(state.conclusion_findings().is_empty());
     }
 
     #[test]
@@ -5300,22 +5348,25 @@ mod tests {
 
         let mut state = AutoReviewState::new(ReviewLaunch { files: Vec::new() });
         let lines = state.report_lines();
-        // Seven findings categories (bold header, placeholder, blank
-        // separator) plus the Conclusion header and its placeholder.
-        assert_eq!(lines.len(), 7 * 3 + 2);
+        // Seven findings categories (bold heading without the Markdown `##`
+        // markers, blank line, placeholder, blank separator) plus the
+        // Conclusion heading, its blank line, and its placeholder.
+        assert_eq!(lines.len(), 7 * 4 + 3);
         assert_eq!(lines[0], "\x1b[1mOverall\x1b[0m");
-        assert_eq!(lines[1], "\x1b[2m  (pending)\x1b[0m");
-        assert_eq!(lines[21], "\x1b[1mConclusion\x1b[0m");
-        assert_eq!(lines[22], "\x1b[2m  (pending)\x1b[0m");
+        assert_eq!(lines[2], "\x1b[2m(pending)\x1b[0m");
+        assert_eq!(lines[28], "\x1b[1mConclusion\x1b[0m");
+        assert_eq!(lines[30], "\x1b[2m(pending)\x1b[0m");
 
-        state.sections[0].push("ready".to_string());
+        state.sections[0].push("**a.rs**: ready".to_string());
         state.finish();
         let lines = state.report_lines();
-        assert_eq!(lines[1], "  - ready");
+        // Findings render as bullets with the bold file name resolved to ANSI.
+        assert_eq!(lines[2], "- \x1b[1ma.rs\x1b[22m: ready");
         // Completed categories without findings switch to "No issues found".
-        assert_eq!(lines[4], "\x1b[2m  No issues found\x1b[0m");
-        // The Conclusion resolves to the patch verdict.
-        assert_eq!(lines[22], "  - orangu approves this patch");
+        assert_eq!(lines[6], "No issues found");
+        // The Conclusion resolves to the patch verdict, standing alone in
+        // bold rather than as a list item.
+        assert_eq!(lines[30], "\x1b[1morangu approves this patch\x1b[0m");
     }
 
     #[test]
