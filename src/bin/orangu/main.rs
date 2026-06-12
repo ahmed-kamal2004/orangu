@@ -40,11 +40,11 @@ use orangu::{
     session::ChatSession,
     tools::ToolExecutor,
     tui::{
-        AutoReviewScreenArgs, FEEDBACK_ERR, FEEDBACK_OK, ReviewCommentEditor, ReviewEntry,
-        ReviewFeedbackView, ReviewScreenArgs, ReviewStatus, ScreenRenderArgs, StatusFragment,
-        auto_review_pane_body_height, render_auto_review_screen, render_review_screen,
-        render_screen, render_thinking_status, render_tool_running_status, render_working_status,
-        review_pane_body_height, terminal_height, terminal_width,
+        AutoReviewRejectView, AutoReviewScreenArgs, FEEDBACK_ERR, FEEDBACK_OK, ReviewCommentEditor,
+        ReviewEntry, ReviewFeedbackView, ReviewScreenArgs, ReviewStatus, ScreenRenderArgs,
+        StatusFragment, auto_review_pane_body_height, render_auto_review_screen,
+        render_review_screen, render_screen, render_thinking_status, render_tool_running_status,
+        render_working_status, review_pane_body_height, terminal_height, terminal_width,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -843,6 +843,8 @@ async fn run() -> Result<()> {
                     &mut usage_stats,
                     &mut viewport,
                     chrome,
+                    &workspace,
+                    &config.terminal,
                 )
                 .await?;
 
@@ -2376,6 +2378,18 @@ fn auto_review_file_categories(path: &str) -> &'static [(usize, &'static str)] {
     }
 }
 
+/// The Alt+r reject window of `/auto_review`: the category receiving the
+/// comment and the multi-line Markdown comment editor. Tab moves the focus
+/// between the selector and the editor.
+struct AutoReviewReject {
+    /// Index of the chosen category, into `AUTO_REVIEW_CATEGORIES`.
+    category: usize,
+    /// `true` while the focus is on the category selector.
+    selector_focused: bool,
+    /// The comment editor; `Enter` inserts a newline into its buffer.
+    editor: InputState,
+}
+
 /// Interactive state for `/auto_review` mode.
 struct AutoReviewState {
     files: Vec<ReviewEntry>,
@@ -2405,6 +2419,9 @@ struct AutoReviewState {
     done: bool,
     /// The run was cancelled with Esc Esc.
     cancelled: bool,
+    /// When set, the Alt+r reject window is open over the panes (browse
+    /// phase only).
+    reject: Option<AutoReviewReject>,
 }
 
 impl AutoReviewState {
@@ -2421,6 +2438,7 @@ impl AutoReviewState {
             finished: None,
             done: false,
             cancelled: false,
+            reject: None,
         }
     }
 
@@ -2494,7 +2512,8 @@ impl AutoReviewState {
                 }
             } else {
                 for finding in section {
-                    lines.push(render_markdown_for_console(&format!("- {finding}")));
+                    let bullet = render_markdown_for_console(&auto_review_finding_bullet(finding));
+                    lines.extend(bullet.lines().map(str::to_string));
                 }
             }
             lines.push(String::new());
@@ -2552,6 +2571,63 @@ impl AutoReviewState {
             Some(index) => index.saturating_sub(1),
             None => self.files.len() - 1,
         });
+    }
+
+    /// The path of the file highlighted in the right pane, if any.
+    fn selected_path(&self) -> Option<String> {
+        self.selected
+            .and_then(|index| self.files.get(index))
+            .map(|file| file.path.clone())
+    }
+
+    /// Alt+a: approve the highlighted file and remove every finding recorded
+    /// against it from all report categories — the model's findings and any
+    /// Alt+r rejection comments alike. The Conclusion follows the file
+    /// statuses, so it updates with the approval.
+    fn approve_selected(&mut self) {
+        let Some(index) = self.selected else {
+            return;
+        };
+        let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
+            return;
+        };
+        self.set_file_status(index, ReviewStatus::Approved);
+        let prefix = format!("**{path}**:");
+        for section in &mut self.sections {
+            section.retain(|finding| !finding.starts_with(&prefix));
+        }
+    }
+
+    /// Alt+r: open the reject window for the highlighted file, starting on
+    /// the category selector.
+    fn open_reject(&mut self) {
+        if self.selected_path().is_some() {
+            self.reject = Some(AutoReviewReject {
+                category: 0,
+                selector_focused: true,
+                editor: InputState::default(),
+            });
+        }
+    }
+
+    /// Save the reject window: mark the highlighted file rejected and append
+    /// the comment (when non-empty) to the chosen category, prefixed with the
+    /// file's path in Markdown bold. Each Alt+r adds another comment.
+    fn commit_reject(&mut self) {
+        let Some(reject) = self.reject.take() else {
+            return;
+        };
+        let Some(index) = self.selected else {
+            return;
+        };
+        let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
+            return;
+        };
+        self.set_file_status(index, ReviewStatus::Rejected);
+        let text = reject.editor.as_str().trim().to_string();
+        if !text.is_empty() {
+            self.sections[reject.category].push(format!("**{path}**: {text}"));
+        }
     }
 
     /// Append one category review's findings — prefixed with the file's path
@@ -2641,6 +2717,19 @@ fn auto_review_progress_label(completed: usize, total_requests: usize) -> String
     let total = total_requests.max(1);
     let percent = completed * 100 / total;
     format!("Progress: {completed}/{total} ({percent}%)")
+}
+
+/// A finding as a Markdown bullet. A multi-line finding (an Alt+r rejection
+/// comment) keeps its newlines, with the continuation lines indented two
+/// spaces so they stay inside the bullet.
+fn auto_review_finding_bullet(finding: &str) -> String {
+    let mut lines = finding.lines();
+    let mut bullet = format!("- {}", lines.next().unwrap_or(""));
+    for line in lines {
+        bullet.push_str("\n  ");
+        bullet.push_str(line);
+    }
+    bullet
 }
 
 /// The body of a finding line: bullet markers and list numbering stripped;
@@ -2799,8 +2888,13 @@ fn auto_review_exit_output(state: &AutoReviewState) -> (Vec<String>, String) {
             markdown.push("No issues found".to_string());
         } else {
             for finding in section {
-                lines.push(render_markdown_for_console(&format!("- {finding}")));
-                markdown.push(format!("- {finding}"));
+                let bullet = auto_review_finding_bullet(finding);
+                lines.extend(
+                    render_markdown_for_console(&bullet)
+                        .lines()
+                        .map(str::to_string),
+                );
+                markdown.push(bullet);
             }
         }
         lines.push(String::new());
@@ -2836,6 +2930,19 @@ fn print_auto_review_screen(
 ) {
     let report_lines = state.report_lines();
     let status_text = state.status_text();
+    let selected_path = state.selected_path();
+    let reject = state
+        .reject
+        .as_ref()
+        .zip(selected_path.as_deref())
+        .map(|(reject, path)| AutoReviewRejectView {
+            path,
+            categories: &AUTO_REVIEW_CATEGORIES,
+            category: reject.category,
+            selector_focused: reject.selector_focused,
+            text: reject.editor.as_str(),
+            cursor: reject.editor.cursor(),
+        });
     print!("{CLEAR_TERMINAL_SEQUENCE}");
     print!(
         "{}",
@@ -2844,6 +2951,8 @@ fn print_auto_review_screen(
             selected: state.selected,
             // Pulsing the index on the render tick makes the dot blink.
             reviewing: state.reviewing.filter(|_| blink_on),
+            browsing: state.done || state.cancelled,
+            reject,
             report_lines: &report_lines,
             scroll: state.scroll,
             x_offset: state.x_offset,
@@ -2862,12 +2971,15 @@ fn print_auto_review_screen(
 /// whole-change pass, and the post-run report browsing, until the user leaves
 /// the view. Returns the final state — completed, cancelled (Esc Esc), or
 /// exited (Alt+x) — for the exit report.
+#[allow(clippy::too_many_arguments)]
 async fn run_auto_review_mode(
     launch: ReviewLaunch,
     prompt_profile: &LlmConfiguration,
     usage_stats: &mut UsageStats,
     viewport: &mut ViewportState,
     chrome: ReviewChrome<'_>,
+    workspace: &Path,
+    terminal: &str,
 ) -> Result<AutoReviewState> {
     let mut state = AutoReviewState::new(launch);
     let mut exit_requested = false;
@@ -3004,7 +3116,7 @@ async fn run_auto_review_mode(
     }
     // Keep the report on screen for browsing until Alt+x/Esc Esc.
     if !exit_requested {
-        run_auto_review_browse(&mut state, viewport, chrome)?;
+        run_auto_review_browse(&mut state, viewport, chrome, workspace, terminal)?;
     }
     Ok(state)
 }
@@ -3140,12 +3252,74 @@ async fn run_auto_review_request(
     }
 }
 
+/// Byte index of the start of the logical line containing `cursor`.
+fn multiline_line_start(text: &str, cursor: usize) -> usize {
+    text[..cursor.min(text.len())]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+/// Byte index of the end of the logical line containing `cursor` (just
+/// before its `\n`, or the end of the text).
+fn multiline_line_end(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    text[cursor..]
+        .find('\n')
+        .map(|index| cursor + index)
+        .unwrap_or(text.len())
+}
+
+/// Move a byte cursor to the same column on the previous logical line (or
+/// its end when that line is shorter); the first line keeps the cursor put.
+fn multiline_cursor_up(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    let line_start = multiline_line_start(text, cursor);
+    if line_start == 0 {
+        return cursor;
+    }
+    let column = text[line_start..cursor].chars().count();
+    let prev_start = multiline_line_start(text, line_start - 1);
+    let prev_line = &text[prev_start..line_start - 1];
+    prev_start
+        + prev_line
+            .char_indices()
+            .nth(column)
+            .map(|(index, _)| index)
+            .unwrap_or(prev_line.len())
+}
+
+/// Move a byte cursor to the same column on the next logical line (or its
+/// end when that line is shorter); the last line keeps the cursor put.
+fn multiline_cursor_down(text: &str, cursor: usize) -> usize {
+    let cursor = cursor.min(text.len());
+    let line_start = multiline_line_start(text, cursor);
+    let column = text[line_start..cursor].chars().count();
+    let line_end = multiline_line_end(text, cursor);
+    if line_end == text.len() {
+        return cursor;
+    }
+    let next_start = line_end + 1;
+    let next_line = &text[next_start..multiline_line_end(text, next_start)];
+    next_start
+        + next_line
+            .char_indices()
+            .nth(column)
+            .map(|(index, _)| index)
+            .unwrap_or(next_line.len())
+}
+
 /// Run the post-run auto review event loop — browsing the report — until the
-/// user exits with Alt+x or Esc Esc.
+/// user exits with Alt+x or Esc Esc. Alt+j/Alt+k move through the files;
+/// Alt+a approves the highlighted file (dropping its findings from the
+/// report), Alt+r opens the reject window, and Alt+e opens the file in the
+/// configured editor.
 fn run_auto_review_browse(
     state: &mut AutoReviewState,
     viewport: &mut ViewportState,
     chrome: ReviewChrome<'_>,
+    workspace: &Path,
+    terminal: &str,
 ) -> Result<()> {
     let mut escape_cancel = EscapeCancelState::default();
     loop {
@@ -3175,6 +3349,67 @@ fn run_auto_review_browse(
         };
         let alt =
             modifiers.contains(KeyModifiers::ALT) && !modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+
+        // While the reject window is open it is modal: Tab moves the focus
+        // between the category selector and the comment editor, Alt+Enter
+        // saves the comment, Esc discards the window.
+        if state.reject.is_some() {
+            escape_cancel.reset();
+            match (code, alt) {
+                (KeyCode::Esc, _) => state.reject = None,
+                (KeyCode::Enter, true) => state.commit_reject(),
+                (KeyCode::Tab, _) | (KeyCode::BackTab, _) => {
+                    let reject = state.reject.as_mut().unwrap();
+                    reject.selector_focused = !reject.selector_focused;
+                }
+                _ => {
+                    let reject = state.reject.as_mut().unwrap();
+                    if reject.selector_focused {
+                        match code {
+                            KeyCode::Up => reject.category = reject.category.saturating_sub(1),
+                            KeyCode::Down => {
+                                reject.category =
+                                    (reject.category + 1).min(AUTO_REVIEW_CATEGORIES.len() - 1);
+                            }
+                            // Enter moves on to the comment editor.
+                            KeyCode::Enter => reject.selector_focused = false,
+                            _ => {}
+                        }
+                    } else {
+                        let editor = &mut reject.editor;
+                        match (code, ctrl) {
+                            (KeyCode::Enter, _) => editor.insert_char('\n'),
+                            (KeyCode::Backspace, _) if alt => {
+                                editor.delete_backward_readline_word();
+                            }
+                            (KeyCode::Backspace, _) => editor.backspace(),
+                            (KeyCode::Delete, _) => editor.delete(),
+                            (KeyCode::Left, true) => editor.move_backward_readline_word(),
+                            (KeyCode::Right, true) => editor.move_forward_readline_word(),
+                            (KeyCode::Left, _) => editor.move_left(),
+                            (KeyCode::Right, _) => editor.move_right(),
+                            (KeyCode::Up, _) => {
+                                editor.cursor = multiline_cursor_up(&editor.buffer, editor.cursor);
+                            }
+                            (KeyCode::Down, _) => {
+                                editor.cursor =
+                                    multiline_cursor_down(&editor.buffer, editor.cursor);
+                            }
+                            (KeyCode::Home, _) => {
+                                editor.cursor = multiline_line_start(&editor.buffer, editor.cursor);
+                            }
+                            (KeyCode::End, _) => {
+                                editor.cursor = multiline_line_end(&editor.buffer, editor.cursor);
+                            }
+                            (KeyCode::Char(ch), false) if !alt => editor.insert_char(ch),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            continue;
+        }
 
         // A second Esc within the timeout leaves auto review; the first arms it.
         if code == KeyCode::Esc {
@@ -3189,6 +3424,17 @@ fn run_auto_review_browse(
             (KeyCode::Char('x'), true) => return Ok(()),
             (KeyCode::Char('j'), true) => state.select_next(),
             (KeyCode::Char('k'), true) => state.select_prev(),
+            (KeyCode::Char('a'), true) => state.approve_selected(),
+            (KeyCode::Char('r'), true) => state.open_reject(),
+            (KeyCode::Char('e'), true) => {
+                if let Some(path) = state.selected_path()
+                    && let Err(err) = open_in_editor(workspace, &path, terminal)
+                {
+                    // No feedback popup in auto review; surface the error in
+                    // the status area.
+                    state.status = format!("Open {path} failed: {err:#}");
+                }
+            }
             (KeyCode::Up, _) => state.scroll = state.scroll.saturating_sub(1),
             (KeyCode::Down, _) => state.scroll = state.scroll.saturating_add(1),
             (KeyCode::Left, _) => state.x_offset = state.x_offset.saturating_sub(1),
@@ -5041,6 +5287,161 @@ mod tests {
         state.set_file_status(1, ReviewStatus::Rejected);
         assert_eq!(state.files[0].status, ReviewStatus::Approved);
         assert_eq!(state.files[1].status, ReviewStatus::Rejected);
+    }
+
+    #[test]
+    fn auto_review_approve_removes_the_files_findings() {
+        use super::AutoReviewState;
+        use crate::commands::ReviewLaunch;
+        use orangu::tui::{ReviewEntry, ReviewStatus};
+
+        let entry = |path: &str| ReviewEntry {
+            path: path.to_string(),
+            status: ReviewStatus::Rejected,
+            diff_lines: vec!["+x".to_string()],
+            patch: String::new(),
+        };
+        let mut state = AutoReviewState::new(ReviewLaunch {
+            files: vec![entry("a.rs"), entry("b.rs")],
+        });
+        state.sections[1].push("**a.rs**: broken loop".to_string());
+        state.sections[2].push("**a.rs**: unsafe input".to_string());
+        state.sections[1].push("**b.rs**: another issue".to_string());
+        state.finish();
+
+        // Alt+a with no highlight does nothing.
+        state.approve_selected();
+        assert_eq!(state.sections[1].len(), 2);
+
+        // Approving a.rs strips its findings from every category — the other
+        // file's findings stay — and turns its dot green.
+        state.selected = Some(0);
+        state.approve_selected();
+        assert_eq!(state.files[0].status, ReviewStatus::Approved);
+        assert_eq!(
+            state.sections[1],
+            vec!["**b.rs**: another issue".to_string()]
+        );
+        assert!(state.sections[2].is_empty());
+    }
+
+    #[test]
+    fn auto_review_reject_records_the_comment_in_the_chosen_category() {
+        use super::AutoReviewState;
+        use crate::commands::ReviewLaunch;
+        use orangu::tui::{ReviewEntry, ReviewStatus};
+
+        let mut state = AutoReviewState::new(ReviewLaunch {
+            files: vec![ReviewEntry {
+                path: "a.rs".to_string(),
+                status: ReviewStatus::Approved,
+                diff_lines: vec!["+x".to_string()],
+                patch: String::new(),
+            }],
+        });
+        state.finish();
+
+        // Alt+r needs a highlighted file.
+        state.open_reject();
+        assert!(state.reject.is_none());
+
+        // The comment lands in the chosen category, prefixed with the path,
+        // and the file's dot turns red.
+        state.selected = Some(0);
+        state.open_reject();
+        let reject = state.reject.as_mut().expect("reject window open");
+        reject.category = 2;
+        reject.editor.set_buffer("uses *raw* input".to_string());
+        state.commit_reject();
+        assert!(state.reject.is_none());
+        assert_eq!(state.files[0].status, ReviewStatus::Rejected);
+        assert_eq!(
+            state.sections[2],
+            vec!["**a.rs**: uses *raw* input".to_string()]
+        );
+
+        // Rejecting can be repeated; each comment is kept.
+        state.open_reject();
+        let reject = state.reject.as_mut().expect("reject window open");
+        reject.category = 2;
+        reject.editor.set_buffer("also unbounded".to_string());
+        state.commit_reject();
+        assert_eq!(state.sections[2].len(), 2);
+
+        // An empty comment still rejects the file but adds no finding.
+        state.approve_selected();
+        state.open_reject();
+        state.commit_reject();
+        assert_eq!(state.files[0].status, ReviewStatus::Rejected);
+        assert!(state.sections.iter().all(|section| section.is_empty()));
+    }
+
+    #[test]
+    fn auto_review_multiline_comments_stay_inside_their_bullet() {
+        use super::{AutoReviewState, auto_review_exit_output, auto_review_finding_bullet};
+        use crate::commands::ReviewLaunch;
+        use orangu::tui::{ReviewEntry, ReviewStatus};
+
+        assert_eq!(auto_review_finding_bullet("one line"), "- one line");
+        assert_eq!(
+            auto_review_finding_bullet("first\nsecond"),
+            "- first\n  second"
+        );
+
+        let mut state = AutoReviewState::new(ReviewLaunch {
+            files: vec![ReviewEntry {
+                path: "a.rs".to_string(),
+                status: ReviewStatus::Approved,
+                diff_lines: vec!["+x".to_string()],
+                patch: String::new(),
+            }],
+        });
+        state.finish();
+        state.selected = Some(0);
+        state.open_reject();
+        let reject = state.reject.as_mut().expect("reject window open");
+        reject.category = 1;
+        reject
+            .editor
+            .set_buffer("broken loop\nsee the spec".to_string());
+        state.commit_reject();
+
+        // The clipboard Markdown keeps the comment as one bullet with an
+        // indented continuation line; the rendered lines split per row.
+        let (lines, markdown) = auto_review_exit_output(&state);
+        assert!(
+            markdown.contains("- **a.rs**: broken loop\n  see the spec"),
+            "{markdown:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("see the spec")));
+        assert!(lines.iter().all(|line| !line.contains('\n')));
+    }
+
+    #[test]
+    fn multiline_cursor_moves_between_logical_lines() {
+        use super::{
+            multiline_cursor_down, multiline_cursor_up, multiline_line_end, multiline_line_start,
+        };
+
+        let text = "alpha\nbé\ngamma";
+        // Down from column 4 of "alpha" clamps to the end of the shorter "bé".
+        assert_eq!(multiline_cursor_down(text, 4), 6 + "bé".len());
+        // Up from "gamma" lands at the same column of "bé"; columns are
+        // characters, not bytes.
+        let gamma_start = text.find("gamma").unwrap();
+        assert_eq!(
+            multiline_cursor_up(text, gamma_start + 1),
+            6 + 'b'.len_utf8()
+        );
+        // The first and last lines keep the cursor put.
+        assert_eq!(multiline_cursor_up(text, 2), 2);
+        assert_eq!(
+            multiline_cursor_down(text, gamma_start + 1),
+            gamma_start + 1
+        );
+        // Line home/end stay within the logical line.
+        assert_eq!(multiline_line_start(text, 7), 6);
+        assert_eq!(multiline_line_end(text, 7), 6 + "bé".len());
     }
 
     #[test]

@@ -551,6 +551,8 @@ The view opens with the tool header row at the top and under it the two panes, e
 - **Left pane** — below the status area, the **report**, rendered from Markdown with the syntax markers consumed: one bold heading per category (Overall, Code, Security, Memory, Performance, Test Suite, Documentation), each listing the findings collected so far as a bullet list with the file names in bold, ending with the **Conclusion**. A category that has produced nothing yet shows `(pending)` while the run is in progress, and `No issues found` once it is done. The pane scrolls and pans independently.
 - **Right pane** — the checklist of changed files, one per row, as in `/review`. The file currently being reviewed is highlighted and its status box blinks a white dot until its review resolves to green or red. Once the run ends (or the whole-change pass starts) the highlight is cleared — nothing is being reviewed anymore; `Alt+j`/`Alt+k` bring it back to move through the list while browsing.
 
+While the run is in progress the header row offers the run keys (`Esc Esc Cancel  Alt+x Exit`); once the run has ended it switches to the browse keys (`Alt+j/k Switch file  Alt+a Approve  Alt+r Reject  Alt+e Open  Alt+x Exit`).
+
 ```
  Auto review: feature/x ...             |Files (3)
  File: src/main.rs (2/3) ... Time: 45s  |[*] README.md
@@ -581,6 +583,16 @@ Each request runs in its own scratch exchange, **without tool definitions** and 
 
 While the model works, the status bar shows `Thinking (...)` until the first token arrives and then the live generation rate (`Working @ X.Y t/s (...)` on llama.cpp), so a stalled server and a slowly generating model are easy to tell apart.
 
+### Browsing and overriding the report
+
+Once the run has ended (done or cancelled), the report stays on screen and you can override the model's verdicts file by file. `Alt+j`/`Alt+k` move the highlight through the file list — from no highlight, `Alt+j` starts at the first file and `Alt+k` at the last.
+
+- **`Alt+a` — approve the highlighted file.** Its dot turns green and **every finding recorded against it is removed from the report** — the model's findings and your own rejection comments alike — so an approved file no longer appears in any category, in the exit report, or on the clipboard. The Conclusion follows the file statuses, so approving the last rejected file flips the verdict to `orangu approves this patch`.
+- **`Alt+r` — reject the highlighted file.** A reject window opens over the panes with a **category selector** (Overall, Code, Security, Memory, Performance, Test Suite, Documentation) and a **multi-line Markdown comment editor**. `Tab` moves the focus between the two; in the selector `Up`/`Down` pick the category (`Enter` moves on to the editor), and in the editor `Enter` inserts a newline while `Up`/`Down`, `Home`/`End`, and the usual editing keys move and edit. Press `Alt+Enter` to save — the file's dot turns red and the comment is appended to the chosen category, prefixed with the file path in bold — or `Esc` to discard the window. Saving with an empty comment still rejects the file without adding a finding. `Alt+r` can be repeated on the same file; each saved comment is kept.
+- **`Alt+e` — open the highlighted file** in your `$EDITOR`, exactly like `Alt+e` in `/review`: terminal editors open in a new window and GUI editors open their own, leaving the report on screen.
+
+Rejection comments become part of the report: they are rendered in the matching category of the left pane (and the exit report), and land on the clipboard as Markdown bullets — a multi-line comment keeps its lines inside one bullet, indented under the first line.
+
 ### Cancelling and exiting
 
 Press `Esc` `Esc` to **cancel** the auto review: the in-flight request is dropped, the run stops, and the report collected so far stays on screen for browsing. Press `Alt+x` (or `Esc` `Esc` again once the run is no longer in progress) to **exit**.
@@ -594,12 +606,25 @@ On exit the report — every category with its findings (or `No issues found`), 
 | `Esc` `Esc` | Cancel the auto review (the collected report stays open) |
 | `Alt+x` | Exit auto review mode; the report is copied to the clipboard |
 | `Esc` `Esc` (after the run) | Exit auto review mode, like `Alt+x` |
-| `Alt+j` / `Alt+k` | Move the highlight through the file list |
+| `Alt+j` / `Alt+k` | Move the highlight through the file list (after the run) |
+| `Alt+a` | Approve the highlighted file and drop its findings from the report |
+| `Alt+r` | Reject the highlighted file: pick a category, write a Markdown comment |
+| `Alt+e` | Open the highlighted file in your configured editor |
 | `Up` / `Down` | Scroll the report one line at a time |
 | `PageUp` / `PageDown` | Scroll the report by a full page |
 | `Left` / `Right` | Pan the report horizontally for long lines |
 
-The report can be scrolled while the run is still in progress.
+The report can be scrolled while the run is still in progress; `Alt+a`, `Alt+r`, and `Alt+e` act once the run has ended.
+
+When the reject window is open it is modal:
+
+| Key | Action |
+| --- | --- |
+| `Tab` | Move the focus between the category selector and the comment editor |
+| `Up` / `Down` | Pick the category (selector) / move the cursor (editor) |
+| `Enter` | Move on to the editor (selector) / insert a newline (editor) |
+| `Alt+Enter` | Save: mark the file rejected and add the comment to the category |
+| `Esc` | Discard the window without saving |
 
 ### Examples
 
