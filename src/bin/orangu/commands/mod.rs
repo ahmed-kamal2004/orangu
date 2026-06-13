@@ -145,6 +145,9 @@ pub enum CommandOutcome {
     Review(ReviewLaunch),
     /// Enter the LLM-driven `/auto_review` mode with a collected branch diff.
     AutoReview(ReviewLaunch),
+    /// Write the console output window or the last review report to a PDF in
+    /// the workspace root.
+    Export(ExportTarget),
     /// Enter the built-in manual viewer.
     Manual,
 }
@@ -200,6 +203,15 @@ pub enum StashSubcommand {
     Drop,
 }
 
+/// What the `/export` tool should write to PDF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportTarget {
+    /// The console output window (`export console`, the default).
+    Console,
+    /// The last `/review` (or `/auto_review`) report (`export review`).
+    Review,
+}
+
 pub enum BranchSubcommand<'a> {
     List,
     ListAll,
@@ -249,6 +261,7 @@ pub enum LocalCommand<'a> {
     Stash(StashSubcommand),
     OpenFile(&'a str),
     Session(Option<Cow<'a, str>>),
+    Export(ExportTarget),
     Manual,
     Usage,
     Build,

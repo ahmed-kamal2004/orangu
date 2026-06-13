@@ -89,6 +89,10 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "review branch",
     // --- auto review ---
     "auto review",
+    // --- export ---
+    "export",
+    "export console",
+    "export review",
     // --- status ---
     "status",
     "show status",
@@ -361,6 +365,14 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     }
     if matches_ci(input, &["auto review"]) {
         return Some(LocalCommand::AutoReview);
+    }
+    // Checked before the more specific buffers: "export console" / "export
+    // review" select a buffer, while a bare "export" defaults to the console.
+    if matches_ci(input, &["export review"]) {
+        return Some(LocalCommand::Export(ExportTarget::Review));
+    }
+    if matches_ci(input, &["export", "export console"]) {
+        return Some(LocalCommand::Export(ExportTarget::Console));
     }
     if matches_ci(input, &["status", "show status", "git status"]) {
         return Some(LocalCommand::Status);

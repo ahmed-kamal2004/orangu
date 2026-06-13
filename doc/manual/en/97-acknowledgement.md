@@ -18,6 +18,10 @@ Tejas Singh Bhati <tejassinghbhati077@gmail.com>
 Jesper Pedersen <jesperpedersen.db@gmail.com>
 ```
 
+## Third-party assets
+
+The PDF produced by the `/export` tool is set in **Red Hat Text**, copyright Red Hat, Inc., used under the SIL Open Font License, Version 1.1. The font files are embedded in the binary; their license is kept alongside them in `assets/fonts/LICENSE`.
+
 ## Contributing
 
 Contributions to [**orangu**][orangu] are managed on [GitHub][orangu]

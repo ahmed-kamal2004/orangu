@@ -16,6 +16,17 @@
 use super::*;
 use std::borrow::Cow;
 
+/// Parse the optional `/export` argument. An empty argument defaults to the
+/// console; `console` and `review` select their buffers; anything else is
+/// rejected (returns `None`).
+pub fn parse_export_target(arg: &str) -> Option<ExportTarget> {
+    match arg.trim().to_ascii_lowercase().as_str() {
+        "" | "console" => Some(ExportTarget::Console),
+        "review" => Some(ExportTarget::Review),
+        _ => None,
+    }
+}
+
 pub fn parse_open_file_target<'a>(input: &'a str, prefix: &str) -> Option<&'a str> {
     let path = strip_ascii_prefix(input, prefix)?.trim();
     if path.is_empty() {

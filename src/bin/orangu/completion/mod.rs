@@ -57,6 +57,7 @@ pub const COMMANDS: &[&str] = &[
     "/restore",
     "/add_file",
     "/auto_review",
+    "/export",
     "/remove_file",
     "/move_file",
     "/cherry_pick",

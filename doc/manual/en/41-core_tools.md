@@ -641,3 +641,51 @@ Natural-language form:
 ```text
 auto review
 ```
+
+\newpage
+
+## /export
+
+`/export` writes a buffer to a PDF file in the root of the workspace, so a session's output or a review can be saved and shared outside the terminal.
+
+It takes one optional argument selecting what to export:
+
+- `/export` or `/export console` — the **console output window**: everything currently in the main output window (prompts, command output, and model responses), with the terminal ANSI styling removed and the lines printed verbatim.
+- `/export review` — the **review buffer**: the Markdown of the last `/review` (or, if none, the last `/auto_review`) report from this session. If no review has been run yet, the command reports that there is nothing to export.
+
+The file is saved in the workspace root as `{repository}-{branch}-console.pdf` or `{repository}-{branch}-review.pdf`, where `{repository}` is the Git repository (or workspace) directory name and `{branch}` is the current branch (`nobranch` when not on one); both are sanitized for use in a filename, so a branch such as `feature/x` becomes `feature-x`. An existing file with the same name is overwritten. On success the saved path is printed to the output window.
+
+Every page carries a **header band** centered on `{repository}-{branch}` and a **footer band** centered on `orangu {version} ({model})` (the active model), both in white on the orangu brand colour to match the terminal banner; in the footer the word `orangu` links to the project site.
+
+The PDF keeps the Markdown formatting as much as a self-contained file can. Text is set in **Red Hat Text**, embedded into the binary (SIL Open Font License), so no system fonts are needed; if for any reason the embedded font cannot be loaded the export falls back to the closest built-in face, Helvetica. Headings use the orangu brand colour. Long lines wrap to the page width using the font's real glyph metrics — prose on word boundaries, code lines hard at the margin — and the content flows across as many pages as needed.
+
+The **console** export preserves the output window line for line (terminal colours removed).
+
+The **review** export is organized for reading and sharing:
+
+- **Page 1 — summary.** A table of the repository, branch, and generation date/time, followed by one row per category with its number of entries (findings), and then an overall **Approved** (green) or **Rejected** (red) status banner read from the report's conclusion.
+- **Page 2 — table of contents.** Each category with the page it starts on.
+- **Page 3 onward — the report.** Each category (`Overall`, `Code`, `Security`, `Memory`, `Performance`, `Test Suite`, `Documentation`, then `Conclusion`) starts on its own page, rendered from the report's Markdown with brand-coloured headings, **bold** and *italic* emphasis, ordered and unordered (including nested) lists, fenced code blocks, block quotes, and tables. So `Overall` opens on page 3.
+
+### Examples
+
+Export the output window (the default):
+
+```text
+/export
+/export console
+```
+
+Export the last review report:
+
+```text
+/export review
+```
+
+Natural-language forms:
+
+```text
+export
+export console
+export review
+```

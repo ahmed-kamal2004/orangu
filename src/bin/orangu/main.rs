@@ -17,6 +17,7 @@ mod build;
 mod commands;
 mod completion;
 mod dispatch;
+mod export;
 mod git;
 mod init;
 mod input;
@@ -71,8 +72,8 @@ use uuid::Uuid;
 use anyhow::Error;
 use commands::ReviewLaunch;
 use commands::{
-    BranchSubcommand, CommandContext, CommandOutcome, CommandState, LocalCommand, LocalError,
-    PruneTarget, StashSubcommand, add_file_usage_message, amend_usage_message,
+    BranchSubcommand, CommandContext, CommandOutcome, CommandState, ExportTarget, LocalCommand,
+    LocalError, PruneTarget, StashSubcommand, add_file_usage_message, amend_usage_message,
     cherry_pick_usage_message, close_usage_message, comment_usage_message, commit_usage_message,
     get_comments_usage_message, grep_usage_message, merge_usage_message, model_usage_message,
     move_file_usage_message, open_file_usage_message, parse_local_command, prune_usage_message,
@@ -893,6 +894,42 @@ async fn run() -> Result<()> {
                 }
                 // The modal view overwrote the screen; the next loop iteration
                 // redraws the normal interface from the top.
+                output_state.reset_scroll();
+                continue;
+            }
+            CommandOutcome::Export(target) => {
+                let result = match target {
+                    ExportTarget::Console => {
+                        export::export_console(&workspace, output_state.lines(), &active_model_id)
+                    }
+                    ExportTarget::Review => {
+                        match last_review_report
+                            .as_deref()
+                            .or(last_auto_review_report.as_deref())
+                        {
+                            Some(report) => {
+                                export::export_review(&workspace, report, &active_model_id)
+                            }
+                            None => Err(anyhow!(
+                                "No review to export; run /review or /auto_review first"
+                            )),
+                        }
+                    }
+                };
+                match result {
+                    Ok(path) => {
+                        output_state.push_text(&format!("Exported to {}", path.display()));
+                        if config.feedback {
+                            output_state.push_text(FEEDBACK_OK);
+                        }
+                    }
+                    Err(err) => {
+                        output_state.push_text(&format!("Error: {err:#}"));
+                        if config.feedback {
+                            output_state.push_text(FEEDBACK_ERR);
+                        }
+                    }
+                }
                 output_state.reset_scroll();
                 continue;
             }

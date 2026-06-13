@@ -154,6 +154,63 @@ fn binding_phrases_all_parse() {
 }
 
 #[test]
+fn parse_export_target_handles_buffers_and_rejects_unknown() {
+    // Empty defaults to the console; both buffers parse; case is ignored;
+    // surrounding whitespace is trimmed; anything else is rejected.
+    assert!(matches!(parse_export_target(""), Some(ExportTarget::Console)));
+    assert!(matches!(
+        parse_export_target("console"),
+        Some(ExportTarget::Console)
+    ));
+    assert!(matches!(
+        parse_export_target("review"),
+        Some(ExportTarget::Review)
+    ));
+    assert!(matches!(
+        parse_export_target("  Review "),
+        Some(ExportTarget::Review)
+    ));
+    assert!(matches!(
+        parse_export_target("CONSOLE"),
+        Some(ExportTarget::Console)
+    ));
+    assert!(parse_export_target("bogus").is_none());
+}
+
+#[test]
+fn parses_export_commands() {
+    // The bare command and an explicit "console" both default to the console.
+    assert!(matches!(
+        parse_local_command("/export"),
+        Some(LocalCommand::Export(ExportTarget::Console))
+    ));
+    assert!(matches!(
+        parse_local_command("/export console"),
+        Some(LocalCommand::Export(ExportTarget::Console))
+    ));
+    assert!(matches!(
+        parse_local_command("/export review"),
+        Some(LocalCommand::Export(ExportTarget::Review))
+    ));
+    // An unknown buffer is not an export command.
+    assert!(parse_local_command("/export bogus").is_none());
+
+    // Natural-language forms.
+    assert!(matches!(
+        parse_local_command("export"),
+        Some(LocalCommand::Export(ExportTarget::Console))
+    ));
+    assert!(matches!(
+        parse_local_command("export console"),
+        Some(LocalCommand::Export(ExportTarget::Console))
+    ));
+    assert!(matches!(
+        parse_local_command("export review"),
+        Some(LocalCommand::Export(ExportTarget::Review))
+    ));
+}
+
+#[test]
 fn parses_natural_language_commands_with_arguments() {
     match parse_local_command("switch model to local") {
         Some(LocalCommand::SetModelId(name)) => assert_eq!(name, "local"),

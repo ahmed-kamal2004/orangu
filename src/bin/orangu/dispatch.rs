@@ -447,6 +447,7 @@ pub(crate) fn handle_command(
                 Err(err) => Ok(local_command_error(err)),
             }
         }
+        LocalCommand::Export(target) => Ok(CommandOutcome::Export(target)),
         LocalCommand::Manual => Ok(CommandOutcome::Manual),
         LocalCommand::Usage => Ok(CommandOutcome::Output(usage_stats.format())),
         LocalCommand::Build => {
