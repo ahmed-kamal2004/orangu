@@ -315,15 +315,38 @@ pub fn run_git_diff_pager(
         .spawn()
         .with_context(|| format!("failed to launch configured git pager '{pager_command}'"))?;
 
-    if let Some(mut stdin) = pager.stdin.take() {
-        stdin
-            .write_all(diff)
-            .with_context(|| format!("failed to write diff to git pager '{pager_command}'"))?;
-    }
+    // Feed the diff on a separate thread so the pager's stdout (and stderr) can
+    // be drained concurrently. Writing the whole diff up front and only reading
+    // stdout afterwards deadlocks once the pager's output fills the OS pipe
+    // buffer (~64 KiB): the pager blocks writing stdout while we block writing
+    // stdin. `delta` with side-by-side/line-numbers easily exceeds that on a
+    // large file, which hung `/review`.
+    let writer = pager.stdin.take().map(|mut stdin| {
+        let diff = diff.to_vec();
+        std::thread::spawn(move || stdin.write_all(&diff))
+    });
 
     let output = pager
         .wait_with_output()
         .with_context(|| format!("failed to read output from git pager '{pager_command}'"))?;
+
+    // The pager has exited, so the writer thread has unblocked. Surface a write
+    // failure only when the pager itself reported success — otherwise its
+    // stderr (handled below) is the more informative error, and a broken pipe
+    // from the pager exiting early is expected.
+    if let Some(writer) = writer {
+        match writer.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if output.status.success() => {
+                return Err(err).with_context(|| {
+                    format!("failed to write diff to git pager '{pager_command}'")
+                });
+            }
+            Ok(Err(_)) => {}
+            Err(_) => return Err(anyhow!("git pager writer thread panicked")),
+        }
+    }
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(anyhow!(
@@ -488,6 +511,52 @@ mod tests {
         assert!(diff.contains("PAGER-START WIDTH="));
         assert!(diff.contains("diff --git"));
         assert!(diff.ends_with("PAGER-END\n"));
+    }
+
+    #[test]
+    fn large_diff_through_a_pager_does_not_deadlock() {
+        // Regression: the pager's stdin used to be written in full before its
+        // stdout was read. A diff that makes the pager emit more than the OS
+        // pipe buffer (~64 KiB) before we finish writing deadlocked both ends,
+        // which hung `/review`. The writer now runs on its own thread. This
+        // test would hang (not just fail) without the fix.
+        let _env_lock = process_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let workspace = tempdir().expect("workspace");
+        let home = tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set_path("HOME", home.path());
+        // `cat` is a non-interactive pass-through pager, so the pager's output
+        // is as large as the (large) diff fed to it — well past the pipe buffer.
+        std::fs::write(home.path().join(".gitconfig"), "[core]\n\tpager = cat\n")
+            .expect("gitconfig");
+        init_git_for_test(workspace.path());
+
+        // A file large enough that its diff dwarfs the pipe buffer.
+        let original: String = (0..8000).map(|n| format!("original line {n}\n")).collect();
+        std::fs::write(workspace.path().join("big.txt"), &original).expect("write big file");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "big.txt"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "-m", "add big file"])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git commit")
+                .success()
+        );
+        let changed: String = (0..8000).map(|n| format!("changed line {n}\n")).collect();
+        std::fs::write(workspace.path().join("big.txt"), &changed).expect("update big file");
+
+        let diff = git_workspace_diff(workspace.path()).expect("git diff");
+        // The whole diff made it through the pager (both removed and added
+        // lines), so nothing was lost to a stalled pipe.
+        assert!(diff.contains("original line 0"));
+        assert!(diff.contains("changed line 7999"));
     }
 
     #[test]
