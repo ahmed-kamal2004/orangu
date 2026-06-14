@@ -150,7 +150,10 @@ pub enum CommandOutcome {
     Export(ExportTarget),
     /// Enter the built-in manual viewer.
     Manual,
+    /// List the commands queued while a request is in flight (`/pending`).
     PendingList,
+    /// Remove the queued command at the given 1-based index
+    /// (`/pending delete <n>`).
     PendingDelete(usize),
 }
 
@@ -271,7 +274,10 @@ pub enum LocalCommand<'a> {
     Build,
     Clear,
     Quit,
+    /// List the commands queued while a request is in flight (`/pending`).
     PendingList,
+    /// Remove a queued command by its 1-based index (`/pending delete <n>`);
+    /// `None` when no valid index was given, which surfaces a usage message.
     PendingDelete(Option<usize>),
 }
 

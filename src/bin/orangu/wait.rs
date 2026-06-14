@@ -463,6 +463,10 @@ pub(crate) fn is_wait_cancel_escape(event: &Event) -> bool {
     )
 }
 
+/// Render the queue of pending commands for the output window: a header
+/// followed by each command on its own 1-based numbered line, or a short notice
+/// when the queue is empty. The numbering matches the index
+/// [`apply_pending_delete`] expects.
 pub(crate) fn format_pending_list(pending: &VecDeque<String>) -> String {
     if pending.is_empty() {
         "No pending commands.".to_string()
@@ -475,6 +479,10 @@ pub(crate) fn format_pending_list(pending: &VecDeque<String>) -> String {
     }
 }
 
+/// Remove the pending command at `index` (1-based, as shown by
+/// [`format_pending_list`]) and report the result to the output window. An
+/// out-of-range index (including `0`) removes nothing and reports that no such
+/// command exists.
 pub(crate) fn apply_pending_delete(
     index: usize,
     pending: &mut VecDeque<String>,
@@ -548,6 +556,49 @@ mod tests {
                 TranscriptLine::Plain(request_cancelled_message()),
             ]
         );
+    }
+
+    #[test]
+    fn format_pending_list_numbers_commands_from_one() {
+        assert_eq!(
+            format_pending_list(&VecDeque::new()),
+            "No pending commands."
+        );
+
+        let pending = VecDeque::from(vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(
+            format_pending_list(&pending),
+            "Pending commands:\n  1. first\n  2. second"
+        );
+    }
+
+    #[test]
+    fn apply_pending_delete_removes_by_one_based_index() {
+        let mut pending = VecDeque::from(vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ]);
+        let mut output_state = OutputState::default();
+
+        // The 1-based index matches the displayed numbering: index 2 drops
+        // "second", leaving the rest in order.
+        apply_pending_delete(2, &mut pending, &mut output_state);
+        assert_eq!(
+            pending,
+            VecDeque::from(vec!["first".to_string(), "third".to_string()])
+        );
+        assert_eq!(
+            output_state.lines(),
+            &[TranscriptLine::Plain("Removed: second".to_string())]
+        );
+
+        // Out-of-range indices (including 0) remove nothing.
+        for index in [0, 3] {
+            let before = pending.clone();
+            apply_pending_delete(index, &mut pending, &mut output_state);
+            assert_eq!(pending, before, "index {index} should not remove anything");
+        }
     }
 
     #[test]

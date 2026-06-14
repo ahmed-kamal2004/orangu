@@ -434,6 +434,12 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
             return Some(LocalCommand::OpenFile(path));
         }
     }
+    // `show pending` is the pending-queue command, not a request to show a file
+    // named "pending"; resolve it before the `show <file>` natural form claims
+    // it. (The other pending phrasings do not collide and are handled below.)
+    if matches_ci(input, &["show pending"]) {
+        return Some(LocalCommand::PendingList);
+    }
     if let Some(args) = parse_show_file_natural_language_args(input) {
         return Some(LocalCommand::ShowFile(args));
     }
