@@ -45,6 +45,19 @@ llama-server -hf ggml-org/gemma-4-E4B-it-GGUF \
 Coding model
 
 ```sh
+llama-server -hf yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF \
+             --port 8100 \
+             --ctx-size 131072 \
+             -t 4 \
+             --webui-mcp-proxy \
+             --fit on \
+             --image-min-tokens 1024 \
+             --tools all
+```
+
+or
+
+```sh
 llama-server -hf unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF \
              --port 8100 \
              --ctx-size 262144 \
