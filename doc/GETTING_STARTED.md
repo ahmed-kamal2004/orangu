@@ -82,6 +82,8 @@ orangu --config ./orangu.conf
 - `/commit <message>`
 - `/restore README.md`
 - `/diff`
+- `/fetch`
+- `/fetch upstream`
 - `/init_repo`
 - `/log`
 - `/log 5`
@@ -91,6 +93,8 @@ orangu --config ./orangu.conf
 - `/push`
 - `/push --force`
 - `/rebase`
+- `/rebase develop`
+- `/rebase origin/main`
 - `/remove_file README.md`
 - `/review`
 - `/squash`

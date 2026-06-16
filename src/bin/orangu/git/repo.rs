@@ -92,6 +92,39 @@ pub fn git_tag_names(repo_root: &Path) -> Vec<String> {
     tags
 }
 
+/// The names of the configured remotes (`git remote`), in `git`'s own listing
+/// order (alphabetical) with `origin` floated to the front when present, so the
+/// conventional default for a fetch is offered first. Returns an empty vector
+/// when there are no remotes or the command fails.
+pub fn git_remote_names(repo_root: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .arg("remote")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut remotes: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    // Float `origin` to the front so it is the default for `/fetch`; `git remote`
+    // already emits the rest in alphabetical order.
+    if let Some(index) = remotes.iter().position(|remote| remote == "origin")
+        && index != 0
+    {
+        let origin = remotes.remove(index);
+        remotes.insert(0, origin);
+    }
+    remotes
+}
+
 pub fn git_current_branch(repo_root: &Path) -> Result<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -496,6 +529,43 @@ mod tests {
         assert!(colored.contains("untracked.txt"));
         let green_positions: Vec<_> = colored.match_indices(ANSI_FG_LIGHT_GREEN).collect();
         assert!(green_positions.len() >= 2);
+    }
+
+    #[test]
+    fn git_remote_names_floats_origin_first_then_alphabetical() {
+        let workspace = tempdir().expect("workspace");
+        init_git_for_test(workspace.path());
+
+        // No remotes configured yet.
+        assert!(git_remote_names(workspace.path()).is_empty());
+
+        // Added out of order; `git remote` lists alphabetically and we float
+        // `origin` to the front so it is the default for /fetch and /rebase.
+        for (name, url) in [
+            ("upstream", "https://example.com/upstream.git"),
+            ("origin", "https://example.com/origin.git"),
+            ("fork", "https://example.com/fork.git"),
+        ] {
+            git_run(workspace.path(), &["remote", "add", name, url]);
+        }
+        assert_eq!(
+            git_remote_names(workspace.path()),
+            vec!["origin", "fork", "upstream"]
+        );
+    }
+
+    #[test]
+    fn git_remote_names_leaves_alphabetical_order_without_origin() {
+        let workspace = tempdir().expect("workspace");
+        init_git_for_test(workspace.path());
+        for (name, url) in [
+            ("upstream", "https://example.com/upstream.git"),
+            ("fork", "https://example.com/fork.git"),
+        ] {
+            git_run(workspace.path(), &["remote", "add", name, url]);
+        }
+        // No `origin` to special-case, so git's alphabetical order stands.
+        assert_eq!(git_remote_names(workspace.path()), vec!["fork", "upstream"]);
     }
 
     #[test]

@@ -18,13 +18,192 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
-pub fn rebase_output(workspace: &Path, forge: Forge) -> Result<String> {
+/// Fetch from a remote with `git fetch`. When `remote` is `None` the first
+/// configured remote (see [`git_remote_names`], `origin` floated to the front)
+/// is used. `gh`/`glab` have no dedicated fetch, so a forge-specific path is
+/// only attempted via [`try_gh_fetch`] before falling back to plain Git.
+pub fn fetch_output(workspace: &Path, remote: Option<&str>, forge: Forge) -> Result<String> {
+    let repo_root = discover_git_root(workspace)
+        .ok_or_else(|| anyhow!("fetch is only available inside a Git repository"))?;
+    let remotes = git_remote_names(&repo_root);
+    if remotes.is_empty() {
+        return Err(anyhow!("no remotes are configured for this repository"));
+    }
+    let remote = match remote {
+        Some(remote) => {
+            if !remotes.iter().any(|known| known == remote) {
+                return Err(anyhow!("unknown remote '{remote}'"));
+            }
+            remote.to_string()
+        }
+        None => remotes[0].clone(),
+    };
+    if let Some(output) = try_gh_fetch(&repo_root, &remote, forge)? {
+        return Ok(output);
+    }
+    git_fetch(&repo_root, &remote)
+}
+
+/// Hook for a forge-specific fetch. Neither `gh` nor `glab` exposes a fetch that
+/// improves on `git fetch`, so this always declines and the caller falls back to
+/// plain Git; it mirrors the other `try_gh_*` hooks so the wiring is uniform.
+pub fn try_gh_fetch(_repo_root: &Path, _remote: &str, _forge: Forge) -> Result<Option<String>> {
+    Ok(None)
+}
+
+pub fn git_fetch(repo_root: &Path, remote: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["fetch", remote])
+        .output()
+        .context("failed to run git fetch")?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let detail = [&stdout, &stderr]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git fetch failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    // `git fetch` reports updated refs on stderr and is silent when nothing
+    // changed, so surface whatever it printed, falling back to a confirmation.
+    let combined = [stdout, stderr]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(if combined.is_empty() {
+        format!("Fetched from '{remote}' (already up to date)")
+    } else {
+        format!("Fetched from '{remote}'\n{combined}")
+    })
+}
+
+/// Rebase the current branch. With no `target` it rebases onto the repository
+/// default branch (the original `/rebase` behaviour); with a `target` it rebases
+/// onto that explicit branch — see [`git_rebase_target`] for how local branches,
+/// remotes, and remote-tracking branches are resolved.
+pub fn rebase_output(workspace: &Path, target: Option<&str>, forge: Forge) -> Result<String> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("rebase is only available inside a Git repository"))?;
+    if let Some(target) = target {
+        return git_rebase_target(&repo_root, target);
+    }
     if let Some(output) = try_gh_rebase(&repo_root, forge)? {
         return Ok(output);
     }
     git_rebase_main(&repo_root)
+}
+
+/// Rebase the current branch onto an explicit `target` supplied to `/rebase`.
+///
+/// The target is resolved against the repository's remotes (see
+/// [`git_remote_names`]):
+/// - `<remote>/<branch>` (e.g. `origin/main`), where `<remote>` is a configured
+///   remote, refreshes that branch with `git fetch <remote> <branch>` and
+///   rebases onto the updated remote-tracking ref.
+/// - a bare remote name (e.g. `origin`) resolves the remote's default branch and
+///   rebases onto it, refreshing it first.
+/// - anything else is treated as a local branch (or other committish) and handed
+///   straight to `git rebase <target>` without a fetch.
+pub fn git_rebase_target(repo_root: &Path, target: &str) -> Result<String> {
+    let remotes = git_remote_names(repo_root);
+    if let Some((remote, branch)) = target.split_once('/')
+        && !branch.is_empty()
+        && remotes.iter().any(|known| known == remote)
+    {
+        return git_rebase_onto_remote(repo_root, remote, branch);
+    }
+    if remotes.iter().any(|known| known == target) {
+        let branch = remote_default_branch(repo_root, target).ok_or_else(|| {
+            anyhow!("could not determine the default branch for remote '{target}'")
+        })?;
+        return git_rebase_onto_remote(repo_root, target, &branch);
+    }
+    git_rebase_local(repo_root, target)
+}
+
+/// Rebase the current branch onto a local branch (or any committish) with
+/// `git rebase <target>`, without contacting a remote.
+pub fn git_rebase_local(repo_root: &Path, target: &str) -> Result<String> {
+    let rebase = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rebase", target])
+        .output()
+        .context("failed to run git rebase")?;
+    if !rebase.status.success() {
+        let stderr = String::from_utf8_lossy(&rebase.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&rebase.stdout).trim().to_string();
+        let detail = [stdout, stderr]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow!(
+            "git rebase failed{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&rebase.stdout).trim().to_string();
+    Ok(if stdout.is_empty() {
+        format!("Rebased onto {target}")
+    } else {
+        stdout
+    })
+}
+
+/// The default branch name (e.g. `main`) of a specific remote, preferring its
+/// recorded `refs/remotes/<remote>/HEAD` and falling back to whichever of
+/// `main`/`master` the remote advertises. Returns `None` when neither resolves.
+fn remote_default_branch(repo_root: &Path, remote: &str) -> Option<String> {
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "symbolic-ref",
+            "--short",
+            &format!("refs/remotes/{remote}/HEAD"),
+        ])
+        .output()
+        && output.status.success()
+    {
+        let name = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .trim_start_matches(&format!("{remote}/"))
+            .to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    for branch in ["main", "master"] {
+        if let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["ls-remote", "--heads", remote, branch])
+            .output()
+            && output.status.success()
+            && !output.stdout.is_empty()
+        {
+            return Some(branch.to_string());
+        }
+    }
+    None
 }
 
 pub fn try_gh_rebase(repo_root: &Path, forge: Forge) -> Result<Option<String>> {
@@ -78,11 +257,20 @@ pub fn git_rebase_main(repo_root: &Path) -> Result<String> {
     ))
 }
 
+/// Rebase the current branch onto `origin/<branch>`, refreshing it first. Thin
+/// wrapper over [`git_rebase_onto_remote`] for the common `origin` case used by
+/// the default-branch rebase.
 pub fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
+    git_rebase_onto_remote(repo_root, "origin", branch)
+}
+
+/// Fetch `<branch>` from `<remote>` and rebase the current branch onto the
+/// updated `<remote>/<branch>` remote-tracking ref.
+pub fn git_rebase_onto_remote(repo_root: &Path, remote: &str, branch: &str) -> Result<String> {
     let fetch = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .args(["fetch", "origin", branch])
+        .args(["fetch", remote, branch])
         .output()
         .context("failed to run git fetch")?;
     if !fetch.status.success() {
@@ -96,10 +284,11 @@ pub fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
             }
         ));
     }
+    let remote_ref = format!("{remote}/{branch}");
     let rebase = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
-        .args(["rebase", &format!("origin/{branch}")])
+        .args(["rebase", &remote_ref])
         .output()
         .context("failed to run git rebase")?;
     if !rebase.status.success() {
@@ -121,7 +310,7 @@ pub fn git_rebase_onto(repo_root: &Path, branch: &str) -> Result<String> {
     }
     let stdout = String::from_utf8_lossy(&rebase.stdout).trim().to_string();
     Ok(if stdout.is_empty() {
-        format!("Rebased onto origin/{branch}")
+        format!("Rebased onto {remote_ref}")
     } else {
         stdout
     })

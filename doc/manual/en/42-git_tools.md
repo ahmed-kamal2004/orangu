@@ -417,6 +417,30 @@ delete branch feature/old
 
 \newpage
 
+## /fetch
+
+Fetches from a remote with `git fetch <remote>`.
+
+`gh`/`glab` have no fetch that improves on Git, so it always uses plain Git. With no argument it fetches from the first configured remote (`origin` is floated to the front of `git remote`, so it is the default when present); pass a remote name to fetch from a specific one. Tab completion after `/fetch ` (or the natural-language forms `fetch ` / `git fetch `) offers the configured remotes, with the default offered first and previewed as the grey inline ghost, so `/fetch u` then Tab completes to `/fetch upstream`. It errors when the repository has no remotes or the named remote is unknown.
+
+### Examples
+
+```text
+/fetch
+/fetch upstream
+```
+
+Natural-language forms:
+
+```text
+fetch
+fetch upstream
+git fetch
+git fetch upstream
+```
+
+\newpage
+
 ## /merge
 
 Merges a branch into the current branch.
@@ -440,14 +464,25 @@ git merge feature/login
 
 ## /rebase
 
-Rebases the current branch against the repository default branch.
+Rebases the current branch onto another branch.
 
-If `gh` is installed it queries the repository default branch; otherwise it probes `origin/main` then `origin/master`.
+With no argument it rebases against the repository default branch: if `gh` is installed it queries the repository default branch, otherwise it probes `origin/main` then `origin/master`, fetches it, and rebases onto the updated `origin/<branch>`.
+
+A target argument rebases onto a specific branch, resolved against the configured remotes:
+
+- A local branch (or any committish) is handed straight to `git rebase <target>` without contacting a remote.
+- A remote-tracking branch such as `origin/main` — whose first segment is a configured remote — is refreshed with `git fetch <remote> <branch>` and rebased onto the updated `<remote>/<branch>`.
+- A bare remote name such as `origin` resolves the remote's default branch (from `refs/remotes/<remote>/HEAD`, falling back to `main` then `master`) and rebases onto it, refreshing it first.
+
+Tab completion after `/rebase ` (or the natural-language forms `rebase ` / `git rebase `) offers, in order, local branch names (from `git branch`), then the configured remotes (from `git remote`, with `origin` floated to the front), then the remote-tracking branches (from `git branch --all`, e.g. `origin/main`). The first local branch is previewed as the grey inline ghost.
 
 ### Examples
 
 ```text
 /rebase
+/rebase develop
+/rebase origin/main
+/rebase upstream
 ```
 
 Natural-language forms:
@@ -455,6 +490,8 @@ Natural-language forms:
 ```text
 rebase
 git rebase
+rebase develop
+git rebase origin/main
 ```
 
 \newpage

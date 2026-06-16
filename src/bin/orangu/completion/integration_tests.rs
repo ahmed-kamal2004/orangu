@@ -280,6 +280,150 @@ fn completes_checkout_branches_and_files() {
 }
 
 #[test]
+fn completes_fetch_remotes_with_origin_first() {
+    let workspace = tempdir().expect("workspace");
+    init_test_git_repo(workspace.path());
+    // Add remotes out of alphabetical order; `origin` must still be offered
+    // first (the default), with the rest following alphabetically.
+    for (name, url) in [
+        ("upstream", "https://example.com/upstream.git"),
+        ("origin", "https://example.com/origin.git"),
+        ("fork", "https://example.com/fork.git"),
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(["remote", "add", name, url])
+                .current_dir(workspace.path())
+                .status()
+                .expect("git remote add")
+                .success()
+        );
+    }
+
+    // Empty argument offers every remote, origin first.
+    let (start, _, candidates) =
+        completion_candidates("/fetch ", "/fetch ".len(), workspace.path(), &[], &[])
+            .expect("fetch completion");
+    assert_eq!(start, "/fetch ".len());
+    assert_eq!(candidates, vec!["origin", "fork", "upstream"]);
+
+    // The grey ghost previews the default (origin) when nothing is typed.
+    assert_eq!(
+        completion_ghost_suffix("/fetch ", "/fetch ".len(), workspace.path(), &[], &[]).as_deref(),
+        Some("origin")
+    );
+
+    // Typing narrows; `/fetch u` -> `upstream`.
+    let (start, _, narrowed) =
+        completion_candidates("/fetch u", "/fetch u".len(), workspace.path(), &[], &[])
+            .expect("fetch completion");
+    assert_eq!(start, "/fetch ".len());
+    assert_eq!(narrowed, vec!["upstream"]);
+    assert_eq!(
+        completion_ghost_suffix("/fetch u", "/fetch u".len(), workspace.path(), &[], &[])
+            .as_deref(),
+        Some("pstream")
+    );
+
+    // The natural-language form completes the same way.
+    let (start, _, nat_candidates) =
+        completion_candidates("fetch f", "fetch f".len(), workspace.path(), &[], &[])
+            .expect("natural fetch completion");
+    assert_eq!(start, "fetch ".len());
+    assert_eq!(nat_candidates, vec!["fork"]);
+}
+
+#[test]
+fn completes_rebase_targets_local_then_remotes_then_remote_branches() {
+    let workspace = tempdir().expect("workspace");
+    init_test_git_repo(workspace.path());
+    std::process::Command::new("git")
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(workspace.path())
+        .status()
+        .expect("set initial branch to main");
+    fs::write(workspace.path().join("main.rs"), "").expect("main.rs");
+    for args in [
+        &["add", "main.rs"][..],
+        &["commit", "--quiet", "-m", "initial"][..],
+        &["checkout", "--quiet", "-b", "feature"][..],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git")
+                .success()
+        );
+    }
+    // A remote with a tracking branch, created without touching the network by
+    // pointing the remote at the repo itself and fetching it.
+    assert!(
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "."])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git remote add")
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["fetch", "--quiet", "origin"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git fetch")
+            .success()
+    );
+
+    let (start, _, candidates) =
+        completion_candidates("/rebase ", "/rebase ".len(), workspace.path(), &[], &[])
+            .expect("rebase completion");
+    assert_eq!(start, "/rebase ".len());
+    // Local branches come first, then the remote, then remote-tracking branches.
+    let main_local = candidates.iter().position(|c| c == "main");
+    let origin_remote = candidates.iter().position(|c| c == "origin");
+    let origin_main = candidates.iter().position(|c| c == "origin/main");
+    assert!(main_local.is_some(), "local branch missing: {candidates:?}");
+    assert!(origin_remote.is_some(), "remote missing: {candidates:?}");
+    assert!(
+        origin_main.is_some(),
+        "remote-tracking branch missing: {candidates:?}"
+    );
+    assert!(
+        main_local < origin_remote && origin_remote < origin_main,
+        "wrong order: {candidates:?}"
+    );
+
+    // The grey ghost previews the first local branch when nothing is typed.
+    assert_eq!(
+        completion_ghost_suffix("/rebase ", "/rebase ".len(), workspace.path(), &[], &[])
+            .as_deref(),
+        Some("feature")
+    );
+
+    // `origin/` narrows to remote-tracking branches; the natural-language form
+    // resolves the same candidates.
+    let (start, _, narrowed) = completion_candidates(
+        "rebase origin/",
+        "rebase origin/".len(),
+        workspace.path(),
+        &[],
+        &[],
+    )
+    .expect("natural rebase completion");
+    assert_eq!(start, "rebase ".len());
+    assert!(
+        narrowed.iter().all(|c| c.starts_with("origin/")),
+        "{narrowed:?}"
+    );
+    assert!(
+        narrowed.contains(&"origin/main".to_string()),
+        "{narrowed:?}"
+    );
+}
+
+#[test]
 fn completes_switch_to_branches_and_tags_but_not_files() {
     let workspace = tempdir().expect("workspace");
     init_test_git_repo(workspace.path());

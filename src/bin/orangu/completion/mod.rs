@@ -48,6 +48,7 @@ pub const COMMANDS: &[&str] = &[
     "/review",
     "/status",
     "/log",
+    "/fetch",
     "/pull",
     "/comment",
     "/close",
@@ -236,6 +237,14 @@ fn structured_completion_candidates(
     }
 
     if let Some((start, candidates)) = cherry_pick_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = fetch_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = rebase_completion_candidates(prefix, workspace) {
         return Some((start, cursor, candidates));
     }
 

@@ -336,6 +336,10 @@ pub(crate) fn handle_command(
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },
+        LocalCommand::Fetch(remote) => match fetch_output(workspace, remote.as_deref(), forge) {
+            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Err(err) => Ok(local_command_error(err)),
+        },
         LocalCommand::Pull(None) => Ok(CommandOutcome::OutputError(
             pull_usage_message().to_string(),
         )),
@@ -377,7 +381,7 @@ pub(crate) fn handle_command(
                 create_pull_request_output(&ws, auto_rebase, auto_squash, forge)
             })))
         }
-        LocalCommand::Rebase => match rebase_output(workspace, forge) {
+        LocalCommand::Rebase(target) => match rebase_output(workspace, target.as_deref(), forge) {
             Ok(_) => Ok(CommandOutcome::Quiet),
             Err(err) => Ok(local_command_error(err)),
         },

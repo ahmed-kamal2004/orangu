@@ -110,6 +110,11 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "show log",
     "git log",
     "git lg",
+    // --- fetch ---
+    "fetch",
+    "git fetch",
+    "fetch ",
+    "git fetch ",
     // --- server (select) ---
     "use server ",
     "switch server to ",
@@ -190,6 +195,8 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     // --- rebase ---
     "rebase",
     "git rebase",
+    "rebase ",
+    "git rebase ",
     // --- merge ---
     "git merge ",
     "merge ",
@@ -427,6 +434,17 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     if matches_ci(input, &["log", "show log", "git log", "git lg"]) {
         return Some(LocalCommand::Log(None));
     }
+    for prefix in ["fetch ", "git fetch "] {
+        if let Some(remote) = strip_ascii_prefix(input, prefix) {
+            let remote = remote.trim();
+            if !remote.is_empty() {
+                return Some(LocalCommand::Fetch(Some(Cow::Borrowed(remote))));
+            }
+        }
+    }
+    if matches_ci(input, &["fetch", "git fetch"]) {
+        return Some(LocalCommand::Fetch(None));
+    }
     for prefix in [
         "use server ",
         "switch server to ",
@@ -594,8 +612,16 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     if matches_ci(input, &["bisect status", "bisect", "git bisect"]) {
         return Some(LocalCommand::Bisect(BisectSubcommand::Status));
     }
+    for prefix in ["rebase ", "git rebase "] {
+        if let Some(target) = strip_ascii_prefix(input, prefix) {
+            let target = target.trim();
+            if !target.is_empty() {
+                return Some(LocalCommand::Rebase(Some(Cow::Borrowed(target))));
+            }
+        }
+    }
     if matches_ci(input, &["rebase", "git rebase"]) {
-        return Some(LocalCommand::Rebase);
+        return Some(LocalCommand::Rebase(None));
     }
     for prefix in ["git merge ", "merge "] {
         if let Some(branch) = strip_ascii_prefix(input, prefix) {

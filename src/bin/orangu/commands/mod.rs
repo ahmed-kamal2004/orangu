@@ -263,18 +263,17 @@ pub enum LocalCommand<'a> {
     Diff(Option<Cow<'a, str>>),
     Grep(Option<Cow<'a, str>>),
     Review,
-    /// `/auto_review` of the whole branch (`None`) or of a single file
-    /// (`Some(path)`), resolved by Tab completion.
     AutoReview(Option<Cow<'a, str>>),
     Status,
     Log(Option<u64>),
+    Fetch(Option<Cow<'a, str>>),
     Pull(Option<u64>),
     Comment(Option<(u64, CommentBody<'a>)>),
     Close(Option<CloseTarget>),
     GetComments(Option<GetCommentsTarget>),
     Prune(Option<PruneTarget>),
     CreatePullRequest,
-    Rebase,
+    Rebase(Option<Cow<'a, str>>),
     Merge(Option<Cow<'a, str>>),
     Branch(BranchSubcommand<'a>),
     Restore(Option<Cow<'a, str>>),
@@ -288,8 +287,6 @@ pub enum LocalCommand<'a> {
     InitRepo,
     Squash,
     Stash(StashSubcommand),
-    /// `/bisect [<subcommand>]` — drive `git bisect` from the prompt; see
-    /// [`BisectSubcommand`].
     Bisect(BisectSubcommand<'a>),
     OpenFile(&'a str),
     Session(Option<Cow<'a, str>>),
@@ -299,10 +296,7 @@ pub enum LocalCommand<'a> {
     Build,
     Clear,
     Quit,
-    /// List the commands queued while a request is in flight (`/pending`).
     PendingList,
-    /// Remove a queued command by its 1-based index (`/pending delete <n>`);
-    /// `None` when no valid index was given, which surfaces a usage message.
     PendingDelete(Option<usize>),
 }
 
@@ -319,8 +313,6 @@ pub struct CommandContext<'a> {
     pub auto_squash: bool,
     pub terminal: &'a str,
     pub forge: crate::git::Forge,
-    /// The last `/review` and `/auto_review` reports, offered to `/comment`
-    /// as comment bodies (`with review`, `with auto review`).
     pub review_reports: crate::git::ReviewReports<'a>,
 }
 

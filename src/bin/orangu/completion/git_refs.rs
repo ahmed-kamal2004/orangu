@@ -18,7 +18,9 @@ use std::path::Path;
 
 use super::*;
 use crate::commands::{shell_words, strip_ascii_prefix};
-use crate::git::{discover_git_root, git_branch_names, git_tag_names};
+use crate::git::{
+    discover_git_root, git_branch_names, git_local_branch_names, git_remote_names, git_tag_names,
+};
 
 pub fn checkout_completion_candidates(
     prefix: &str,
@@ -170,6 +172,87 @@ pub fn cherry_pick_completion_candidates(
         .map(|root| git_commit_hashes(&root, token))
         .unwrap_or_default();
     Some((cmd_len, candidates))
+}
+
+/// Completion candidates for `/fetch <remote>` (and its natural-language forms
+/// `fetch ` / `git fetch `): the configured remotes whose name starts with the
+/// typed token, in [`git_remote_names`] order so the default — `origin` floated
+/// to the front — is offered first and previewed as the inline ghost. Returns
+/// `None` when the input is not a fetch command, leaving the slash-command list
+/// to complete the command name itself.
+pub fn fetch_completion_candidates(prefix: &str, workspace: &Path) -> Option<(usize, Vec<String>)> {
+    let (start, token) = if let Some(rest) = prefix.strip_prefix("/fetch ") {
+        ("/fetch ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git fetch ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "fetch ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_remote_names(&root))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|remote| remote.starts_with(token))
+        .collect();
+
+    Some((start, candidates))
+}
+
+/// Completion candidates for `/rebase <target>` (and its natural-language forms
+/// `rebase ` / `git rebase `): the rebase target, offered in priority order —
+/// local branches first (from `git branch`), then the configured remotes (from
+/// `git remote`, `origin` floated to the front), then the remote-tracking
+/// branches (e.g. `origin/main`). The first local branch is previewed as the
+/// inline ghost. Returns `None` when the input is not a rebase command, leaving
+/// the slash-command list to complete the command name itself.
+pub fn rebase_completion_candidates(
+    prefix: &str,
+    workspace: &Path,
+) -> Option<(usize, Vec<String>)> {
+    let (start, token) = if let Some(rest) = prefix.strip_prefix("/rebase ") {
+        ("/rebase ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git rebase ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "rebase ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+
+    let candidates = discover_git_root(workspace)
+        .map(|root| rebase_target_candidates(&root))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|target| target.starts_with(token))
+        .collect();
+
+    Some((start, candidates))
+}
+
+/// The rebase targets in offer order — local branches, then remotes, then
+/// remote-tracking branches — deduplicated while preserving that order. A
+/// remote-tracking branch is any `git branch --all` ref that is not also a local
+/// branch (e.g. `origin/main`); local branches and bare remote names come first
+/// so they are preferred when the user has only typed a short prefix.
+fn rebase_target_candidates(repo_root: &Path) -> Vec<String> {
+    let local = git_local_branch_names(repo_root);
+    let local_set: std::collections::HashSet<&str> = local.iter().map(String::as_str).collect();
+    let remote_branches: Vec<String> = git_branch_names(repo_root)
+        .into_iter()
+        .filter(|branch| !local_set.contains(branch.as_str()))
+        .collect();
+    let remotes = git_remote_names(repo_root);
+
+    let mut seen = std::collections::HashSet::new();
+    local
+        .into_iter()
+        .chain(remotes)
+        .chain(remote_branches)
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .collect()
 }
 
 pub fn diff_completion_prefix(prefix: &str) -> Option<(usize, &str)> {

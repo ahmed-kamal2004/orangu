@@ -154,6 +154,7 @@ pub fn help_text() -> &'static str {
 /close -i <number>|-p <number>                Close a GitHub/GitLab issue or pull request with gh/glab
 /commit <message>                             Commit all tracked changes with git commit -a -m
 /diff                                         Show a color unified diff against the current branch
+/fetch [remote]                               Fetch from a remote with git fetch (Tab completes git remotes; defaults to the first remote)
 /get_comments -i <number>|-p <number>         List comments on a GitHub/GitLab issue or pull request with gh/glab
 /grep <pattern>                               Search the workspace with git grep
 /init_repo                                    Initialize a Git repository in the workspace
@@ -164,7 +165,7 @@ pub fn help_text() -> &'static str {
 /pull <number>                                Check out a GitHub/GitLab pull/merge request on a dedicated branch
 /pull_request                                 Create a pull request for the current branch
 /push [--force]                               Push the current branch to origin
-/rebase                                       Rebase the current branch against master/main
+/rebase [target]                              Rebase the current branch onto master/main, or onto a given target (Tab completes local branches, then remotes, then remote branches)
 /remove_file <path>                           Remove a file or directory from Git tracking
 /restore [--staged] <file>                    Restore a file or unstage it (git restore)
 /review                                       Review branch changes against main/master in a split view
@@ -176,7 +177,7 @@ pub fn help_text() -> &'static str {
 /clear                                        Clear the current conversation
 /quit                                         Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `status`, `rebase`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `comment on 48 with review`, `comment on 48 with auto review`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `auto review`, `export console`, `export review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `bisect start`, `mark good`, `mark bad`, `bisect reset`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `pending`, `show manual`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `fetch`, `fetch upstream`, `status`, `rebase`, `rebase origin/main`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `comment on 48 with review`, `comment on 48 with auto review`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `auto review`, `export console`, `export review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `bisect start`, `mark good`, `mark bad`, `bisect reset`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `pending`, `show manual`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion.
 

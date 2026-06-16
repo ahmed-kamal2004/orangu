@@ -266,6 +266,40 @@ fn parses_pull_request_commands() {
 }
 
 #[test]
+fn parses_fetch_commands() {
+    // Bare command (and natural-language aliases) fetch the default remote.
+    assert!(matches!(
+        parse_local_command("/fetch"),
+        Some(LocalCommand::Fetch(None))
+    ));
+    assert!(matches!(
+        parse_local_command("/fetch "),
+        Some(LocalCommand::Fetch(None))
+    ));
+    assert!(matches!(
+        parse_local_command("fetch"),
+        Some(LocalCommand::Fetch(None))
+    ));
+    assert!(matches!(
+        parse_local_command("git fetch"),
+        Some(LocalCommand::Fetch(None))
+    ));
+    // A remote argument is captured verbatim, slash and natural forms alike.
+    assert!(matches!(
+        parse_local_command("/fetch upstream"),
+        Some(LocalCommand::Fetch(Some(ref remote))) if remote == "upstream"
+    ));
+    assert!(matches!(
+        parse_local_command("fetch upstream"),
+        Some(LocalCommand::Fetch(Some(ref remote))) if remote == "upstream"
+    ));
+    assert!(matches!(
+        parse_local_command("git fetch upstream"),
+        Some(LocalCommand::Fetch(Some(ref remote))) if remote == "upstream"
+    ));
+}
+
+#[test]
 fn parses_comment_commands() {
     assert!(matches!(
         parse_local_command("/comment 51 \"My comment\""),
@@ -528,21 +562,44 @@ fn parses_log_commands() {
 
 #[test]
 fn parses_rebase_commands() {
+    // Bare command (and natural-language aliases) rebase onto the default branch.
     assert!(matches!(
         parse_local_command("/rebase"),
-        Some(LocalCommand::Rebase)
+        Some(LocalCommand::Rebase(None))
+    ));
+    assert!(matches!(
+        parse_local_command("/rebase "),
+        Some(LocalCommand::Rebase(None))
     ));
     assert!(matches!(
         parse_local_command("rebase"),
-        Some(LocalCommand::Rebase)
+        Some(LocalCommand::Rebase(None))
     ));
     assert!(matches!(
         parse_local_command("Rebase"),
-        Some(LocalCommand::Rebase)
+        Some(LocalCommand::Rebase(None))
     ));
     assert!(matches!(
         parse_local_command("git rebase"),
-        Some(LocalCommand::Rebase)
+        Some(LocalCommand::Rebase(None))
+    ));
+    // An explicit target is captured verbatim across slash and natural forms,
+    // including remote and remote-tracking-branch targets.
+    assert!(matches!(
+        parse_local_command("/rebase develop"),
+        Some(LocalCommand::Rebase(Some(ref target))) if target == "develop"
+    ));
+    assert!(matches!(
+        parse_local_command("rebase develop"),
+        Some(LocalCommand::Rebase(Some(ref target))) if target == "develop"
+    ));
+    assert!(matches!(
+        parse_local_command("git rebase upstream"),
+        Some(LocalCommand::Rebase(Some(ref target))) if target == "upstream"
+    ));
+    assert!(matches!(
+        parse_local_command("/rebase origin/main"),
+        Some(LocalCommand::Rebase(Some(ref target))) if target == "origin/main"
     ));
 }
 

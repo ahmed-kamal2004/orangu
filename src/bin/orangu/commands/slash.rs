@@ -40,6 +40,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/grep" => Some(LocalCommand::Grep(None)),
         "/init_repo" => Some(LocalCommand::InitRepo),
         "/log" => Some(LocalCommand::Log(None)),
+        "/fetch" => Some(LocalCommand::Fetch(None)),
         "/merge" => Some(LocalCommand::Merge(None)),
         "/move_file" => Some(LocalCommand::MoveFile(None)),
         "/pull" => Some(LocalCommand::Pull(None)),
@@ -52,7 +53,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/auto_review" => Some(LocalCommand::AutoReview(None)),
         "/export" => Some(LocalCommand::Export(ExportTarget::Console)),
         "/push" => Some(LocalCommand::Push(false)),
-        "/rebase" => Some(LocalCommand::Rebase),
+        "/rebase" => Some(LocalCommand::Rebase(None)),
         "/remove_file" => Some(LocalCommand::RemoveFile(None)),
         "/squash" => Some(LocalCommand::Squash),
         "/stash" => Some(LocalCommand::Stash(StashSubcommand::Push)),
@@ -111,6 +112,14 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             if let Some(args) = input.strip_prefix("/log ") {
                 return Some(LocalCommand::Log(args.trim().parse::<u64>().ok()));
             }
+            if let Some(args) = input.strip_prefix("/fetch ") {
+                let remote = args.trim();
+                return Some(LocalCommand::Fetch(if remote.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(remote))
+                }));
+            }
             if let Some(args) = input.strip_prefix("/pull ") {
                 return Some(LocalCommand::Pull(args.trim().parse::<u64>().ok()));
             }
@@ -134,6 +143,14 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
                     None
                 } else {
                     Some(Cow::Borrowed(branch))
+                }));
+            }
+            if let Some(args) = input.strip_prefix("/rebase ") {
+                let target = args.trim();
+                return Some(LocalCommand::Rebase(if target.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(target))
                 }));
             }
             if let Some(args) = input.strip_prefix("/checkout ") {

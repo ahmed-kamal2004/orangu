@@ -586,7 +586,7 @@ pub fn create_pull_request_output(
     // Apply any configured auto-fixes before re-checking the branch state.
     let behind = git_commit_count(&repo_root, &format!("HEAD..{base_ref}"))?;
     if behind > 0 && auto_rebase {
-        rebase_output(workspace, forge)?;
+        rebase_output(workspace, None, forge)?;
     }
     let ahead = git_commit_count(&repo_root, &format!("{base_ref}..HEAD"))?;
     if ahead > 1 && auto_squash {
