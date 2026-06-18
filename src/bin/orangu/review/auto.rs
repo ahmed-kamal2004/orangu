@@ -1218,6 +1218,7 @@ pub(crate) async fn run_auto_review_mode(
     chrome: ReviewChrome<'_>,
     workspace: &Path,
     terminal: &str,
+    feedback: bool,
 ) -> Result<AutoReviewState> {
     let mut state = AutoReviewState::new(launch);
     state.model = chrome.current_model.to_string();
@@ -1263,6 +1264,7 @@ pub(crate) async fn run_auto_review_mode(
                 &mut state,
                 viewport,
                 chrome,
+                feedback,
             )
             .await?;
             match outcome {
@@ -1333,6 +1335,7 @@ pub(crate) async fn run_auto_review_mode(
             &mut state,
             viewport,
             chrome,
+            feedback,
         )
         .await?;
         match outcome {
@@ -1349,6 +1352,17 @@ pub(crate) async fn run_auto_review_mode(
             AutoReviewRequestOutcome::Cancelled => state.cancel(),
             AutoReviewRequestOutcome::Exit => exit_requested = true,
         }
+    }
+    // When feedback is on, announce a completed run with the standard terminal
+    // bell and drop the blinking-dot title back to a plain `orangu`. Only a run
+    // that actually finished rings — a cancel (Esc Esc) or exit (Alt+x) does
+    // not.
+    if feedback {
+        if state.done {
+            ring_terminal_bell();
+        }
+        set_terminal_title(Some(TERMINAL_TITLE));
+        std::io::stdout().flush()?;
     }
     // Keep the report on screen for browsing until Alt+x/Esc Esc.
     if !exit_requested {
@@ -1381,6 +1395,7 @@ pub(crate) async fn run_auto_review_request(
     state: &mut AutoReviewState,
     viewport: &mut ViewportState,
     chrome: ReviewChrome<'_>,
+    feedback: bool,
 ) -> Result<AutoReviewRequestOutcome> {
     let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
     let prompt_output = Arc::clone(&streamed_state);
@@ -1482,6 +1497,18 @@ pub(crate) async fn run_auto_review_request(
                 // The reviewed file's white dot blinks at ~1Hz on the 120ms
                 // frame clock: four frames on, four frames off.
                 let blink_on = (frame / 4).is_multiple_of(2);
+                // With feedback on, mirror the progress in the terminal title so
+                // a backgrounded window still shows the run is alive: `orangu ●`
+                // with the dot blinking once per second off the whole-run clock.
+                if feedback {
+                    let dot_on = state.elapsed().as_secs().is_multiple_of(2);
+                    let title = if dot_on {
+                        format!("{TERMINAL_TITLE} ●")
+                    } else {
+                        TERMINAL_TITLE.to_string()
+                    };
+                    set_terminal_title(Some(&title));
+                }
                 print_auto_review_screen(state, viewport, chrome, status, blink_on, "", 0, "");
                 std::io::stdout().flush()?;
             }

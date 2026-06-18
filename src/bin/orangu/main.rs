@@ -889,6 +889,7 @@ async fn run() -> Result<()> {
                     chrome,
                     &workspace,
                     &config.terminal,
+                    config.feedback,
                 )
                 .await?;
 

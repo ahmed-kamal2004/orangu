@@ -62,7 +62,7 @@ code_max_tokens = 0
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width in characters. Controls the layout canvas for `/show_file` output. Defaults to `512` |
 | `banner` | No | Horizontal placement of the banner. Defaults to `left`. Options: `left`, `center`, `right` |
-| `feedback` | No | Show a green or red dot in the output window after each command to indicate success or failure. Defaults to `off`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
+| `feedback` | No | Show a green or red dot in the output window after each command to indicate success or failure, blink an `orangu ●` progress title and ring the terminal bell when a `/auto_review` finishes. Defaults to `off`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `auto_rebase` | No | Automatically rebase the branch before `/pull_request` if it is behind the base. Defaults to `off`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `auto_squash` | No | Automatically squash commits before `/pull_request` if more than one commit is ahead of the base. Defaults to `off`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `terminal` | No | Launch command used to open `$EDITOR` for terminal editors in a new window for `/open_file` (for example `xterm -e` or `kitty`). When unset, a terminal emulator is auto-detected |
@@ -136,7 +136,7 @@ model = ggml-org/gemma-4-E4B-it-GGUF
 - Set `api_key` when the server requires authentication, for example a llama.cpp server started with `llama-server --api-key <key>`. The key is sent as a bearer token on every request, including the `/v1/models` probe
 - Each server section must use a unique `endpoint`; `http://x` and `http://x/v1` are treated as the same host
 - Use `/server` to switch between the configured servers at runtime; Tab completion lists every server section
-- Set `feedback = on` in `[orangu]` to show a green or red dot in the output window after each command completes
+- Set `feedback = on` in `[orangu]` to show a green or red dot in the output window after each command completes, and to blink an `orangu ●` title and ring the terminal bell while/when a `/auto_review` runs and finishes
 
 ## Sample file
 

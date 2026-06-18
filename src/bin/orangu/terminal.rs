@@ -40,6 +40,13 @@ pub(crate) fn set_terminal_title(title: Option<&str>) {
     }
 }
 
+/// Ring the terminal bell (ASCII `BEL`), which terminals surface as the
+/// standard notification sound (or a visual flash when configured). Used to
+/// announce that a long-running `/auto_review` has finished.
+pub(crate) fn ring_terminal_bell() {
+    print!("\x07");
+}
+
 pub(crate) struct TerminalUiGuard;
 
 impl TerminalUiGuard {

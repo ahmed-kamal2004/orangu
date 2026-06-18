@@ -601,6 +601,8 @@ Each request runs in its own scratch exchange, **without tool definitions** and 
 
 While the model works, the status bar shows `Thinking (...)` until the first token arrives and then the live generation rate (`Working @ X.Y t/s (...)` on llama.cpp), so a stalled server and a slowly generating model are easy to tell apart.
 
+A full-branch auto review can take a while, so when **`feedback` is on** (see the Configuration chapter) orangu surfaces its progress outside the window too: while the run is in progress the **terminal title** reads `orangu ●` with the white dot blinking once a second, so a backgrounded or unfocused terminal still shows that a review is running. When the run **finishes**, orangu rings the **terminal bell** — the standard desktop notification sound (or a visual flash, depending on your terminal) — and drops the title back to a plain `orangu`. A run that is cancelled (`Esc Esc`) or exited (`Alt+x`) before it finishes does not ring. With `feedback` off, neither the title nor the bell is touched.
+
 ### Browsing and overriding the report
 
 Once the run has ended (done or cancelled), the report stays on screen and you can override the model's verdicts file by file. `Alt+j`/`Alt+k` move the highlight through the file list — from no highlight, `Alt+j` starts at the first file and `Alt+k` at the last.
