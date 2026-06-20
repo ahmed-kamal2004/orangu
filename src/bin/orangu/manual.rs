@@ -34,7 +34,7 @@ use orangu::tui::{
 use std::io::Write;
 
 use super::input::{EscapeCancelState, InputState, ViewportState};
-use super::render::{ANSI_FG_CODE, ANSI_FG_RESET, ANSI_FG_SUBTLE, render_markdown_for_console};
+use super::render::{ANSI_FG_CODE, render_markdown_for_console};
 
 /// Raw manual chapters, embedded at compile time in reading order. A chapter
 /// added under `doc/manual/en` must also be added here. The pandoc front page
@@ -152,6 +152,24 @@ fn strip_ansi(line: &str) -> String {
                     chars.next();
                     chars.next();
                 }
+                // An OSC sequence (e.g. an OSC 8 hyperlink) draws nothing, so
+                // skip it: `ESC ] ... ST`, terminated by BEL or `ESC \`.
+                Some(&']') => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\x07') => break,
+                            Some('\x1b') => {
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
+                }
                 _ => {}
             }
             continue;
@@ -161,34 +179,15 @@ fn strip_ansi(line: &str) -> String {
     plain
 }
 
-/// Strip the renderer's dimmed ` (url)` suffix after every link label, so
-/// links are shown as just their underlined labels.
-fn strip_link_urls(line: &str) -> String {
-    let marker = format!("{ANSI_FG_SUBTLE} (");
-    let closer = format!("){ANSI_FG_RESET}");
-    let mut text = String::new();
-    let mut rest = line;
-    while let Some(start) = rest.find(&marker) {
-        let after = &rest[start + marker.len()..];
-        let Some(end) = after.find(&closer) else {
-            break;
-        };
-        text.push_str(&rest[..start]);
-        rest = &after[end + closer.len()..];
-    }
-    text.push_str(rest);
-    text
-}
-
-/// Render a page's markdown for the left pane: resolve reference links
-/// against the shared definitions, drop the ``` fence lines, and strip the
-/// URL suffixes from link labels.
+/// Render a page's markdown for the left pane: resolve reference links against
+/// the shared definitions and drop the ``` fence lines. Links render as OSC 8
+/// hyperlinks (just their labels, made clickable), so no URL suffix is shown.
 fn page_lines(page: &str) -> Vec<String> {
     let source = format!("{page}\n\n{MANUAL_LINK_DEFINITIONS}");
     render_markdown_for_console(&source)
         .lines()
         .filter(|line| !is_code_fence_line(line))
-        .map(strip_link_urls)
+        .map(str::to_string)
         .collect()
 }
 
@@ -642,7 +641,7 @@ pub fn run_manual_mode(viewport: &mut ViewportState, chrome: ManualChrome<'_>) -
 mod tests {
     use super::{
         ANSI_FG_CODE, ManualScreenArgs, ManualSection, ManualState, is_code_fence_line,
-        manual_sections, page_heading, render_manual_screen, strip_link_urls,
+        manual_sections, page_heading, render_manual_screen,
     };
     use crate::input::InputState;
     use crate::render::ANSI_FG_LINK;
@@ -721,14 +720,6 @@ mod tests {
                 .any(|line| line.contains("show available commands")),
             "code-block content should remain"
         );
-    }
-
-    #[test]
-    fn strip_link_urls_removes_the_url_suffix() {
-        let rendered = super::render_markdown_for_console("See [the docs](https://example.com/x).");
-        let line = strip_link_urls(rendered.lines().next().unwrap());
-        assert!(!line.contains("(https://example.com/x)"));
-        assert!(line.contains("the docs"));
     }
 
     #[test]

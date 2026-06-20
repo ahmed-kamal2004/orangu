@@ -46,6 +46,29 @@ pub fn clip_line(line: &str, x_offset: usize, visible_width: usize) -> String {
                         seq.push(c);
                     }
                 }
+                // An OSC sequence (e.g. an OSC 8 hyperlink): `ESC ] ... ST`,
+                // where the terminator is BEL or `ESC \`. It draws nothing, so
+                // it is carried through but never counts toward a column.
+                Some(&']') => {
+                    seq.push(chars.next().unwrap());
+                    loop {
+                        match chars.next() {
+                            Some('\x07') => {
+                                seq.push('\x07');
+                                break;
+                            }
+                            Some('\x1b') => {
+                                seq.push('\x1b');
+                                if chars.peek() == Some(&'\\') {
+                                    seq.push(chars.next().unwrap());
+                                }
+                                break;
+                            }
+                            Some(c) => seq.push(c),
+                            None => break 'outer,
+                        }
+                    }
+                }
                 _ => {}
             }
             if col < x_offset {
@@ -106,6 +129,24 @@ pub fn visible_line_width(line: &str) -> usize {
                     chars.next();
                     chars.next();
                 }
+                // An OSC sequence (e.g. an OSC 8 hyperlink) draws nothing, so
+                // skip it entirely: `ESC ] ... ST`, terminated by BEL or `ESC \`.
+                Some(&']') => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\x07') => break,
+                            Some('\x1b') => {
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            Some(_) => {}
+                            None => break 'outer,
+                        }
+                    }
+                }
                 _ => {}
             }
             continue;
@@ -113,4 +154,40 @@ pub fn visible_line_width(line: &str) -> usize {
         col += 1;
     }
     col
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An OSC 8 hyperlink: `label` is shown and clickable, the URL is not drawn.
+    fn osc8_link(label: &str, url: &str) -> String {
+        format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+    }
+
+    #[test]
+    fn visible_width_ignores_osc8_hyperlinks() {
+        // Only the label's six glyphs count; the OSC 8 control bytes (and the
+        // URL they carry) are zero-width.
+        let line = osc8_link("orangu", "https://example.com/orangu/");
+        assert_eq!(visible_line_width(&line), "orangu".chars().count());
+
+        // The same holds with a BEL terminator instead of ST.
+        let bel = "\x1b]8;;https://example.com\x07orangu\x1b]8;;\x07";
+        assert_eq!(visible_line_width(bel), "orangu".chars().count());
+    }
+
+    #[test]
+    fn clip_line_preserves_osc8_hyperlinks_and_their_width() {
+        let line = format!("see {} now", osc8_link("orangu", "https://example.com/"));
+        // Wide enough to keep the whole line: the visible text is "see orangu now".
+        let clipped = clip_line(&line, 0, 40);
+        assert_eq!(
+            visible_line_width(&clipped),
+            "see orangu now".chars().count()
+        );
+        // The hyperlink's opening and closing control sequences survive.
+        assert!(clipped.contains("\x1b]8;;https://example.com/\x1b\\"));
+        assert!(clipped.contains("\x1b]8;;\x1b\\"));
+    }
 }

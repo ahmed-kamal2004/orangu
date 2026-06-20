@@ -478,15 +478,15 @@ pub fn render_inline_node(node: &Node) -> String {
     }
 }
 
+/// Render `label` as an OSC 8 terminal hyperlink to `url`: a supporting
+/// terminal shows only `label`, made clickable, and the URL is not printed.
+/// The label keeps the link colour and underline so it still reads as a link
+/// where OSC 8 is unsupported (there the control sequence is ignored and the
+/// styled label remains). An empty label falls back to showing the URL itself.
 pub fn render_link(label: &str, url: &str) -> String {
-    if label.is_empty() || label == url {
-        return format!(
-            "{ANSI_FG_LINK}{ANSI_UNDERLINE_ON}{url}{ANSI_UNDERLINE_OFF}{ANSI_FG_RESET}"
-        );
-    }
-
+    let shown = if label.is_empty() { url } else { label };
     format!(
-        "{ANSI_FG_LINK}{ANSI_UNDERLINE_ON}{label}{ANSI_UNDERLINE_OFF}{ANSI_FG_RESET}{ANSI_FG_SUBTLE} ({url}){ANSI_FG_RESET}"
+        "\x1b]8;;{url}\x1b\\{ANSI_FG_LINK}{ANSI_UNDERLINE_ON}{shown}{ANSI_UNDERLINE_OFF}{ANSI_FG_RESET}\x1b]8;;\x1b\\"
     )
 }
 

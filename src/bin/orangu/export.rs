@@ -1296,6 +1296,25 @@ fn strip_ansi(line: &str) -> String {
                     chars.next();
                     chars.next();
                 }
+                // An OSC sequence (e.g. an OSC 8 hyperlink) prints nothing, so
+                // drop it: `ESC ] ... ST`, terminated by BEL or `ESC \`. The
+                // hyperlink's visible label is left in place.
+                Some(&']') => {
+                    chars.next();
+                    loop {
+                        match chars.next() {
+                            Some('\x07') => break,
+                            Some('\x1b') => {
+                                if chars.peek() == Some(&'\\') {
+                                    chars.next();
+                                }
+                                break;
+                            }
+                            Some(_) => {}
+                            None => break 'outer,
+                        }
+                    }
+                }
                 _ => {}
             }
             continue;
