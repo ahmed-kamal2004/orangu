@@ -411,7 +411,7 @@ pub(crate) fn handle_command(
             issue_usage_message().to_string(),
         )),
         LocalCommand::Issue(Some(action)) => match issue_field_output(workspace, &action, forge) {
-            Ok(output) => Ok(CommandOutcome::Output(output)),
+            Ok(()) => Ok(CommandOutcome::Quiet),
             Err(err) => Ok(local_command_error(err)),
         },
         LocalCommand::GetComments(None) => Ok(CommandOutcome::OutputError(

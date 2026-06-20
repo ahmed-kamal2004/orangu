@@ -439,11 +439,7 @@ fn forge_target_kind(repo_root: &Path, number: u64, forge: Forge) -> Result<Forg
 /// issue or pull/merge request. The number is detected as an issue or a
 /// pull/merge request first (reviewers only apply to the latter), then the
 /// matching `gh`/`glab` edit command runs.
-pub fn issue_field_output(
-    workspace: &Path,
-    action: &IssueAction<'_>,
-    forge: Forge,
-) -> Result<String> {
+pub fn issue_field_output(workspace: &Path, action: &IssueAction<'_>, forge: Forge) -> Result<()> {
     let repo_root = discover_git_root(workspace)
         .ok_or_else(|| anyhow!("issue is only available inside a Git repository"))?;
     let cli = forge.cli();
@@ -521,15 +517,7 @@ pub fn issue_field_output(
             }
         ));
     }
-    let target = match kind {
-        ForgeTargetKind::PullRequest => "pull request",
-        ForgeTargetKind::Issue => "issue",
-    };
-    Ok(format!(
-        "Added {} {} to {target} #{number}",
-        action.field.as_str(),
-        action.value
-    ))
+    Ok(())
 }
 
 /// The reviewers, assignees, and labels a repository offers, fetched once at
