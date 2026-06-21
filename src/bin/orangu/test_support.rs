@@ -23,12 +23,15 @@ pub(crate) fn test_profile(provider: &str, endpoint: &str, model: &str) -> LlmCo
         provider: provider.to_string(),
         endpoint: endpoint.to_string(),
         model: model.to_string(),
+        role: "all".to_string(),
         api_key: None,
         request_timeout_seconds: 1800,
         max_tool_rounds: 10,
         review_max_tokens: 512,
+        review_confidence_threshold: 80,
         code_max_tokens: 0,
-        system_prompt: String::new(),
+        system_prompt: "".to_string(),
+        model_verbosity: None,
     }
 }
 

@@ -38,8 +38,11 @@ The report covers:
 
 - total application time,
 - total time spent waiting for LLM responses,
-- total tokens generated (counted with the bundled tokenizer), and
-- average tokens per second.
+- total tool execution time,
+- total tokens generated (counted with the bundled tokenizer),
+- average tokens per second,
+- context cache statistics (reads, hits, misses, rate, bytes saved), and
+- shell compression statistics (lines saved, patterns applied).
 
 ### Examples
 

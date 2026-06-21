@@ -1280,7 +1280,10 @@ pub(crate) fn auto_review_header_rest<'a>(line: &'a str, name: &str) -> Option<&
 /// `build_auto_review_category_prompt` asks the model for: the explicit
 /// verdict (when one was found) and the findings list. Markdown decoration
 /// around the headers is tolerated and "None" placeholders are dropped.
-pub(crate) fn parse_auto_review_category_response(text: &str) -> (Option<bool>, Vec<String>) {
+pub(crate) fn parse_auto_review_category_response(
+    text: &str,
+    confidence_threshold: u32,
+) -> (Option<bool>, Vec<String>) {
     let mut approved = None;
     let mut findings = Vec::new();
     for line in text.lines() {
@@ -1302,8 +1305,30 @@ pub(crate) fn parse_auto_review_category_response(text: &str) -> (Option<bool>, 
         // any inline finding after the colon), then strip bullet markers and
         // "None" placeholders.
         let body = auto_review_header_rest(line, "findings").unwrap_or(line);
-        if let Some(finding) = auto_review_finding_body(body) {
-            findings.push(finding);
+        if let Some(mut finding) = auto_review_finding_body(body) {
+            // Extract and verify confidence score
+            if let Some(start_idx) = finding.find("[Score:") {
+                let rest = &finding[start_idx + 7..];
+                if let Some(end_idx) = rest.find(']') {
+                    if let Ok(score) = rest[..end_idx].trim().parse::<u32>() {
+                        // Drop low-confidence false positives.
+                        if confidence_threshold > 0 && score < confidence_threshold {
+                            continue;
+                        }
+                    }
+                    // Strip the score tag from the UI report
+                    finding = format!(
+                        "{} {}",
+                        finding[..start_idx].trim(),
+                        rest[end_idx + 1..].trim()
+                    )
+                    .trim()
+                    .to_string();
+                }
+            }
+            if !auto_review_is_placeholder(&finding) {
+                findings.push(finding);
+            }
         }
     }
     (approved, findings)
@@ -1320,21 +1345,37 @@ pub(crate) fn build_auto_review_category_prompt(
     category: &str,
     focus: &str,
     patch: &str,
+    compression_enabled: bool,
+    diff_file_cap: usize,
 ) -> String {
+    let context =
+        orangu::compression::prepare_llm_diff_context(patch, compression_enabled, diff_file_cap);
+    let note = context
+        .note
+        .map(|note| format!("{note}\n\n"))
+        .unwrap_or_default();
     format!(
         "You are performing an automated code review of the changes made to `{path}` in the diff below.\n\
          \n\
-         ```diff\n{patch}\n```\n\
+         {note}\
+         ```diff\n{}\n```\n\
          \n\
          Review only the changes — the added, removed, and modified lines — for {category} issues ({focus}), and judge how the changes fit into the surrounding context. Do not review pre-existing content the change does not touch.\n\
+         \n\
+         GUIDELINES:\n\
+         1. It meaningfully impacts the accuracy, performance, security, or maintainability of the code.\n\
+         2. The bug is discrete and actionable (not pedantic nitpicks).\n\
+         3. Ignore trivial style unless it obscures meaning.\n\
+         4. Give every finding a Confidence Score from 0 to 100 based on certainty.\n\
          \n\
          Respond in exactly this format, with no other prose:\n\
          \n\
          VERDICT: APPROVE or REJECT\n\
          FINDINGS:\n\
-         - <line>: <finding, or None>\n\
+         - <line>: [Score: <0-100>] <finding, or None>\n\
          \n\
-         List at most five findings, one short line each, prefixed with the affected line number — or range, as `<start>-<end>` — in the new version of the file (the right side of the diff, the lines marked with `+` or unchanged). Only report real {category} issues introduced by the changes. Answer REJECT only when a finding must be fixed before merging; otherwise answer APPROVE."
+         List at most five findings, one short line each, prefixed with the affected line number — or range, as `<start>-<end>` — in the new version of the file (the right side of the diff, the lines marked with `+` or unchanged). Only report real {category} issues introduced by the changes. Answer REJECT only when a finding must be fixed before merging; otherwise answer APPROVE.",
+        context.content
     )
 }
 
@@ -1502,6 +1543,8 @@ pub(crate) async fn run_auto_review_mode(
     workspace: &Path,
     terminal: &str,
     feedback: bool,
+    compression_enabled: bool,
+    diff_file_cap: usize,
     skills: &orangu::skills::SkillRegistry,
 ) -> Result<AutoReviewState> {
     let immediate = launch.immediate;
@@ -1522,6 +1565,9 @@ pub(crate) async fn run_auto_review_mode(
         }
     }
     state.begin_run();
+
+    let mut enhanced_prompt = system_prompt(prompt_profile, None).into_owned();
+    enhanced_prompt.push_str(&orangu::config::load_agents_instructions(workspace));
 
     let total = state.files.len();
     // The repository root the file paths are relative to, for the on-disk binary
@@ -1571,8 +1617,15 @@ pub(crate) async fn run_auto_review_mode(
                 index + 1,
                 auto_review_progress_label(completed, total_requests),
             );
-            let prompt = build_auto_review_category_prompt(&path, category, focus, &patch);
-            let mut scratch = ChatSession::new(system_prompt(prompt_profile));
+            let prompt = build_auto_review_category_prompt(
+                &path,
+                category,
+                focus,
+                &patch,
+                compression_enabled,
+                diff_file_cap,
+            );
+            let mut scratch = ChatSession::new(&enhanced_prompt);
             let llm_start = std::time::Instant::now();
             let outcome = run_auto_review_request(
                 &mut scratch,
@@ -1594,7 +1647,10 @@ pub(crate) async fn run_auto_review_mode(
                         &text,
                         std::time::Duration::ZERO,
                     );
-                    let (verdict, findings) = parse_auto_review_category_response(&text);
+                    let (verdict, findings) = parse_auto_review_category_response(
+                        &text,
+                        prompt_profile.review_confidence_threshold,
+                    );
                     // A category passes when it carries an approving verdict, or
                     // when it carries neither a verdict nor findings — a bare
                     // "no verdict and no findings" response (e.g. truncated by
@@ -1647,7 +1703,7 @@ pub(crate) async fn run_auto_review_mode(
             auto_review_progress_label(completed, total_requests),
         );
         let prompt = build_auto_review_overall_prompt(&state);
-        let mut scratch = ChatSession::new(system_prompt(prompt_profile));
+        let mut scratch = ChatSession::new(&enhanced_prompt);
         let llm_start = std::time::Instant::now();
         let outcome = run_auto_review_request(
             &mut scratch,
@@ -2256,7 +2312,7 @@ mod tests {
                     FINDINGS:\n\
                     - unwrap may panic\n\
                     - missing error context\n";
-        let (approved, findings) = parse_auto_review_category_response(text);
+        let (approved, findings) = parse_auto_review_category_response(text, 80);
         assert_eq!(approved, Some(false));
         assert_eq!(
             findings,
@@ -2282,7 +2338,7 @@ mod tests {
             "VERDICT: APPROVE\nFINDINGS:\n- None: None\n",
             "VERDICT: APPROVE\nFINDINGS:\n- None: None (nothing to flag)\n",
         ] {
-            let (approved, findings) = parse_auto_review_category_response(clean);
+            let (approved, findings) = parse_auto_review_category_response(clean, 80);
             assert_eq!(approved, Some(true));
             assert!(findings.is_empty(), "{clean:?} -> {findings:?}");
         }
@@ -2291,6 +2347,7 @@ mod tests {
         // a "None"-style placeholder is stripped.
         let (_, findings) = parse_auto_review_category_response(
             "FINDINGS:\n- 42: unwrap may panic (added on the hot path)\n",
+            80,
         );
         assert_eq!(
             findings,
@@ -2306,7 +2363,7 @@ mod tests {
                     ## Findings:\n\
                     * looks fine\n\
                     1. add a regression test\n";
-        let (approved, findings) = parse_auto_review_category_response(text);
+        let (approved, findings) = parse_auto_review_category_response(text, 80);
         assert_eq!(approved, Some(true));
         assert_eq!(
             findings,
@@ -2320,6 +2377,7 @@ mod tests {
         // a header-like word is not mistaken for a header.
         let (approved, findings) = parse_auto_review_category_response(
             "FINDINGS: cache grows without bound\nverdict handling is wrong\n",
+            80,
         );
         assert_eq!(approved, None);
         assert_eq!(
@@ -2800,9 +2858,16 @@ mod tests {
         let patch = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-x\n+y\n";
         let (_, code_focus) = AUTO_REVIEW_FILE_CATEGORIES[0];
         let (_, security_focus) = AUTO_REVIEW_FILE_CATEGORIES[1];
-        let code = build_auto_review_category_prompt("src/main.rs", "Code", code_focus, patch);
-        let security =
-            build_auto_review_category_prompt("src/main.rs", "Security", security_focus, patch);
+        let code =
+            build_auto_review_category_prompt("src/main.rs", "Code", code_focus, patch, false, 20);
+        let security = build_auto_review_category_prompt(
+            "src/main.rs",
+            "Security",
+            security_focus,
+            patch,
+            false,
+            20,
+        );
 
         let diff_end = code.find("```\n\n").expect("diff block") + "```".len();
         assert!(code[..diff_end].contains(patch));
@@ -2904,7 +2969,7 @@ mod tests {
         // so a file whose categories all come back empty is approved (the
         // pass test `verdict.unwrap_or(findings.is_empty())` is true and no
         // findings are recorded).
-        let (verdict, findings) = parse_auto_review_category_response("");
+        let (verdict, findings) = parse_auto_review_category_response("", 80);
         assert_eq!(verdict, None);
         assert!(findings.is_empty());
         assert!(verdict.unwrap_or(findings.is_empty()));

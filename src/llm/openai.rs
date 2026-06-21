@@ -460,12 +460,15 @@ mod tests {
             provider: "llama.cpp".to_string(),
             endpoint: "http://localhost:8100".to_string(),
             model: "model".to_string(),
+            role: "all".to_string(),
             api_key: None,
             request_timeout_seconds: 5,
             max_tool_rounds: 10,
             review_max_tokens: 512,
+            review_confidence_threshold: 80,
             code_max_tokens: 0,
-            system_prompt: String::new(),
+            system_prompt: "".to_string(),
+            model_verbosity: None,
         };
 
         // `code_max_tokens = 0` leaves chat responses uncapped; a non-zero

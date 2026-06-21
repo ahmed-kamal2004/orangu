@@ -35,7 +35,7 @@ orangu is the lean, private, Git-centric coding companion for the terminal — b
 - **A single fast native binary** — written entirely in Rust, with quick startup, no runtime to install, no garbage-collector pauses, and a small download.
 - **The whole Git loop lives in the prompt** — branch, commit, rebase, squash, cherry-pick, stash, bisect, push, and GitHub/GitLab pull requests, comments, and issues, all without leaving the terminal.
 - **Tuned for llama.cpp** — live tokens/second in the footer, and an interactive `--init` wizard that auto-detects the model your server is serving.
-- **Agent Skills support** — discovers reusable `SKILL.md` skills from both orangu-native and cross-client `.agents/skills` directories, and ships a bundled `debugging` skill installed by `--init`.
+- **Agent Skills & Memory** — discovers reusable `SKILL.md` skills and merges cross-session memory and instructions from global (`~/.orangu/AGENTS.md`) and workspace-level (`./AGENTS.md`) files directly into the LLM context.
 - **Natural to drive** — dozens of slash commands, each with plain-English aliases (`review`, `auto review`, `commit "..."`, `merge feature/foo`, `pull 58`).
 
 ## Features
@@ -46,9 +46,11 @@ orangu is the lean, private, Git-centric coding companion for the terminal — b
 
 **Workspace-aware tooling.** Local tools read, edit, list, search (`/grep`), and fetch files, and run shell commands — all scoped to your workspace. A full set of Git commands (`/status`, `/diff`, `/log`, `/commit`, `/amend`, `/squash`, `/rebase`, `/merge`, `/cherry_pick`, `/branch`, `/stash`, `/bisect`, `/push`, `/pull`, …) and forge integration (`/pull_request`, `/comment`, `/close`, `/get_comments` on GitHub and GitLab) keep the whole change-and-review loop in one place.
 
+**Advanced Context Compression Engine.** orangu protects the LLM's context window and minimizes latency using a state-of-the-art compression pipeline. Features include AST-aware file downsampling, an intelligent Git diff engine, session fingerprinting, secret redaction, and automatic transcript compaction. See the [Compression](doc/manual/en/75-compression.md) manual for details.
+
 **Multiple workspaces as tabs.** Open several projects at once in one orangu instead of one instance per project. Each workspace is a tab with its own session, scrollback, pending queue, and command history; switch with `Alt+,`/`Alt+.` or the `/workspace` command, open and close tabs with `/create workspace <dir>` / `/delete workspace` (or `Alt+Insert`/`Alt+Delete`), and reopen the last set of tabs at startup with `-a`/`--all`. See the [Workspaces](https://github.com/mnemosyne-systems/orangu/blob/main/doc/manual/en/31-workspaces.md) chapter.
 
-**Agent Skills, with progressive disclosure.** orangu discovers skills from four locations: `~/.orangu/skills/`, `~/.agents/skills/`, `<workspace>/.orangu/skills/`, and `<workspace>/.agents/skills/`. At startup it discloses only each skill's name, description, and `SKILL.md` location to the model; the full skill instructions are loaded only when relevant or when you invoke a skill directly with `/skill-name`. Project skills override user skills with the same name.
+**Agent Skills & Workspace Memory.** orangu discovers skills from four locations: `~/.orangu/skills/`, `~/.agents/skills/`, `<workspace>/.orangu/skills/`, and `<workspace>/.agents/skills/`. At startup it discloses only each skill's name, description, and `SKILL.md` location to the model. Additionally, `orangu` automatically scans for `AGENTS.md` files in your home directory and workspace root, injecting persistent project instructions and long-term memory into every chat and review session.
 
 **Comfortable terminal experience.**
 
@@ -84,13 +86,15 @@ On exit it writes a category-grouped report with an approve/reject **Conclusion*
 **`/auto_review` — LLM-driven review.** The model reviews the whole change and each file on its own, sorting findings into the same seven categories and marking every file approved or rejected — then summarizes the change as a whole under **Overall** and renders a final **Conclusion** verdict (`orangu approves/rejects this patch`). It is smart about effort:
 
 - File type decides what's scanned — lock files and binary assets are auto-approved with no requests, documentation is reviewed only for the Documentation category, and source files get the full set of checks
+- Uses a **Rigorous Review Rubric** combined with **Confidence Scoring** (0-100) to automatically filter out false positives, hallucinations, and pedantic nitpicks. It only flags high-confidence bugs that meaningfully impact correctness, security, or performance.
 - A live status bar shows the current file, category, overall progress, elapsed time, and an updating time estimate; the terminal title blinks and the bell rings on completion (when `feedback` is on)
 - Each finding is pinned to its `file:line`, and requests are length-capped and tool-free so reviews stay fast and bounded even on slow local models
 - After the run you can browse the report, override any verdict (approve/reject with your own comment), and remove findings before exporting
 
 Run `/auto_review <file>` to review a single file (the whole file on `main`/`master`, or just its changes on a branch). Like `/review`, the report is copied to the clipboard and reusable with `/export review` and `/comment ... with auto review`.
 
-> **Tip:** the per-request length cap is `review_max_tokens` (default `512`; `0` disables it). If you review with a model that *thinks* before answering, raise it (e.g. `2048`) so the reasoning tokens don't crowd out the answer — see the [Configuration](https://github.com/mnemosyne-systems/orangu/blob/main/doc/manual/en/20-configuration.md) chapter (*Response-token caps*). Set `feedback = on` to get the blinking terminal title and completion bell during a run.
+> **Tip:** You can control the chatty nature of local models using the `model_verbosity` (`terse`, `normal`, `verbose`) and `reasoning_effort` options in your `orangu.conf`. 
+> The per-request length cap is `review_max_tokens` (default `512`; `0` disables it). If you review with a model that *thinks* before answering, raise it (e.g. `2048`) so the reasoning tokens don't crowd out the answer — see the [Configuration](https://github.com/mnemosyne-systems/orangu/blob/main/doc/manual/en/20-configuration.md) chapter (*Response-token caps*). Set `feedback = on` to get the blinking terminal title and completion bell during a run.
 
 See [Core tools](https://github.com/mnemosyne-systems/orangu/blob/main/doc/manual/en/41-core_tools.md) in the manual for the full reference and key bindings.
 

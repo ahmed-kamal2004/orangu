@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+pub mod compression;
 pub mod config;
+pub mod context;
+pub mod diff;
+pub mod explorer;
 pub mod llm;
 pub mod session;
 pub mod skills;

@@ -96,6 +96,8 @@ code_max_tokens = 0
 | `terminal` | No | Launch command used to open `$EDITOR` for terminal editors in a new window for `/open_file` (for example `xterm -e` or `kitty`). When unset, a terminal emulator is auto-detected |
 | `platform` | No | Code-hosting platform driven for `/pull`, `/pull_request`, `/merge`, and `/comment`. Defaults to `github` (uses the `gh` CLI). Options: `github`, `gitlab` (uses the `glab` CLI) |
 | `system_prompt` | No | Override the base system prompt sent to the model. When empty (the default) orangu uses its built-in coding-assistant prompt. The discovered Agent Skills index is appended to whichever prompt is in effect |
+| `model_verbosity` | No | Set the model's chattiness. Defaults to `normal`. Options: `terse`, `normal`, `verbose` |
+| `review_confidence_threshold` | No | Minimum confidence score (0–100) for `/auto_review` findings; findings below this threshold are silently dropped. Defaults to `80`. Set to `0` to disable filtering |
 
 ### Response-token caps
 

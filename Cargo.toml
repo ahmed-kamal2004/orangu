@@ -20,6 +20,7 @@ html2text = "0.13.6"
 ignore = "0.4.24"
 markdown = "1.0.0"
 printpdf = "0.7.0"
+regex = "1.10"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 rustyline = "17.0.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -28,6 +29,7 @@ serde_yaml = "0.9.34"
 syntect = "5.3.0"
 terminal_size = "0.4.1"
 ttf-parser = "0.19.2"
+sha2 = "0.10.8"
 tiktoken-rs = "0.6.0"
 tokio = { version = "1.48.0", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
@@ -38,4 +40,10 @@ strum = "0.28.0"
 strum_macros = "0.28.0"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.20.0"
+
+[[bench]]
+name = "compression"
+path = "test/benchmarks/compression.rs"
+harness = false

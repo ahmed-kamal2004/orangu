@@ -39,9 +39,11 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/disconnect" => Some(LocalCommand::Disconnect),
         "/reload" => Some(LocalCommand::Reload),
         "/restart" => Some(LocalCommand::Restart),
-        "/tools" => Some(LocalCommand::Tools),
         "/model" => Some(LocalCommand::ModelInfo),
         "/server" => Some(LocalCommand::ServerInfo),
+
+        "/verbosity" => Some(LocalCommand::SetVerbosity("")),
+        "/tools" => Some(LocalCommand::Tools),
         "/session" => Some(LocalCommand::Session(None)),
         "/workspace" => Some(LocalCommand::Workspace(None)),
         "/list_files" => Some(LocalCommand::ListFiles),
@@ -123,6 +125,10 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(name) = input.strip_prefix("/server ") {
                 return Some(LocalCommand::SetServer(name.trim()));
+            }
+
+            if let Some(level) = input.strip_prefix("/verbosity ") {
+                return Some(LocalCommand::SetVerbosity(level.trim()));
             }
             if let Some(args) = input.strip_prefix("/show_file ") {
                 return Some(LocalCommand::ShowFile(Cow::Borrowed(args.trim())));

@@ -8,7 +8,7 @@
 
 | Tool | Purpose | Key arguments |
 | :-- | :-- | :-- |
-| `read_file` | Read a text file from the workspace | `path`, optional `start_line`, optional `end_line` |
+| `read_file` | Read a text file from the workspace | `path`, optional `start_line`, optional `end_line`, optional `mode` |
 | `edit_file` | Edit a workspace file by replacing text (creates it if missing) | `path`, `old_text`, `new_text`, optional `replace_all` |
 | `list_directory` | List files and directories below the workspace | optional `path`, optional `max_depth` |
 | `fetch_url` | Fetch an external URL and return readable text | `url`, optional `max_chars` |
@@ -30,7 +30,8 @@ Absolute paths are allowed only when they still resolve inside the workspace aft
 {
   "path": "src/main.rs",
   "start_line": 10,
-  "end_line": 20
+  "end_line": 20,
+  "mode": "full"
 }
 ```
 
@@ -39,7 +40,10 @@ Behavior:
 - `path` is required
 - `start_line` defaults to line 1
 - `end_line` defaults to the end of the file
-- Each returned line is prefixed as `N. text`
+- `mode` defaults to `full`. Valid modes are `full` (read actual content), `signatures` (extract only public interfaces), or `map` (extract top-level item declarations for an overview).
+- Each returned line is prefixed as `N. text` (only applies to `full` mode)
+- Repeated unchanged whole-file reads in the same conversation may return a cache stub instead of resending the entire file
+- The cache stub means the model should reuse the earlier full content already in context; use `start_line` and `end_line` to request a fresh focused excerpt when needed
 
 ## `edit_file`
 
@@ -121,5 +125,6 @@ Behavior:
 - `cwd` defaults to the workspace root
 - `timeout_seconds` defaults to `30`
 - The command runs through `bash -lc`
+- Output is intercepted and compressed before being sent to the LLM to prevent flooding the context window. Native slash commands (like `/diff`, `/log`, `/build`) execute locally and display their full output to the user, but when this output is injected into the model's context, it is compressed and tracked via a cache identifier to ensure it is only transmitted once if unchanged.
 - Output is returned as pretty-printed JSON with `exit_code`, `stdout`, and `stderr`
 - `stdout` and `stderr` are each truncated to at most 20,000 characters

@@ -29,6 +29,9 @@ pub struct ClientAppConfiguration {
     pub default_server: String,
     pub default_model: Option<String>,
     pub llms: HashMap<String, LlmConfiguration>,
+    pub compression: bool,
+    pub auto_downsample_lines: usize,
+    pub diff_file_cap: usize,
     pub quotes: String,
     pub width: usize,
     #[serde(skip)]
@@ -43,11 +46,25 @@ pub struct ClientAppConfiguration {
     pub drop_down: bool,
 }
 
+impl ClientAppConfiguration {
+    /// Returns the name of the first server configured with the given role.
+    /// If no server specifies this role, returns the `default_server`.
+    pub fn find_server_for_role(&self, role: &str) -> String {
+        for (name, profile) in &self.llms {
+            if profile.role == role {
+                return name.clone();
+            }
+        }
+        self.default_server.clone()
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct LlmConfiguration {
     pub provider: String,
     pub endpoint: String,
     pub model: String,
+    pub role: String,
     pub api_key: Option<String>,
     pub request_timeout_seconds: u64,
     pub max_tool_rounds: usize,
@@ -56,6 +73,10 @@ pub struct LlmConfiguration {
     /// Response-token cap for normal chat/tool responses; `0` disables the cap.
     pub code_max_tokens: u32,
     pub system_prompt: String,
+    pub model_verbosity: Option<String>,
+    /// Minimum confidence score (0–100) for `/auto_review` findings; findings
+    /// below this threshold are silently dropped. `0` disables filtering.
+    pub review_confidence_threshold: u32,
 }
 
 pub const CLIENT_SECTION: &str = "orangu";
@@ -79,6 +100,10 @@ pub fn default_review_max_tokens() -> u32 {
     512
 }
 
+pub fn default_review_confidence_threshold() -> u32 {
+    80
+}
+
 /// Default chat-response cap: `0`, no cap — normal coding responses are
 /// open-ended.
 pub fn default_code_max_tokens() -> u32 {
@@ -86,6 +111,18 @@ pub fn default_code_max_tokens() -> u32 {
 }
 
 pub fn default_drop_down() -> bool {
+    true
+}
+
+pub fn default_auto_downsample_lines() -> usize {
+    300
+}
+
+pub fn default_diff_file_cap() -> usize {
+    20
+}
+
+pub fn default_compression() -> bool {
     true
 }
 
@@ -108,13 +145,28 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
         parse_client_field(&client, "max_tool_rounds", default_llm_max_tool_rounds)?;
     let review_max_tokens =
         parse_client_field(&client, "review_max_tokens", default_review_max_tokens)?;
+    let review_confidence_threshold = parse_client_field(
+        &client,
+        "review_confidence_threshold",
+        default_review_confidence_threshold,
+    )?;
     let code_max_tokens = parse_client_field(&client, "code_max_tokens", default_code_max_tokens)?;
+    let compression = client
+        .get("compression")
+        .map(|value| parse_feedback_bool(value))
+        .unwrap_or_else(default_compression);
     let width = parse_client_field(&client, "width", default_virtual_width)?;
     let workspaces = parse_client_field(&client, "workspaces", WorkspacePlacement::default)?;
     let drop_down = client
         .get("drop_down")
         .map(|value| parse_feedback_bool(value))
         .unwrap_or_else(default_drop_down);
+    let auto_downsample_lines = parse_client_field(
+        &client,
+        "auto_downsample_lines",
+        default_auto_downsample_lines,
+    )?;
+    let diff_file_cap = parse_client_field(&client, "diff_file_cap", default_diff_file_cap)?;
     let system_prompt = client.get("system_prompt").cloned().unwrap_or_default();
 
     // `[orangu].model` is the general default model id; a server section's own
@@ -125,17 +177,25 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
         .filter(|value| !value.is_empty());
 
     normalize_client_configuration(ClientAppConfiguration {
-        default_server: client.get("server").cloned().unwrap_or_default(),
+        default_server: client
+            .get("server")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_default(),
         default_model: default_model.clone(),
         llms: parse_llm_profiles(
             sections,
             timeout,
             max_tool_rounds,
             review_max_tokens,
+            review_confidence_threshold,
             code_max_tokens,
             system_prompt,
             default_model,
         )?,
+        compression,
+        auto_downsample_lines,
+        diff_file_cap,
         quotes: client.get("quotes").cloned().unwrap_or_default(),
         width,
         banner: client
@@ -307,6 +367,7 @@ fn parse_llm_profiles(
     timeout: u64,
     max_tool_rounds: usize,
     review_max_tokens: u32,
+    review_confidence_threshold: u32,
     code_max_tokens: u32,
     system_prompt: String,
     default_model: Option<String>,
@@ -326,6 +387,16 @@ fn parse_llm_profiles(
                 .get("api_key")
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty());
+            let role = values
+                .get("role")
+                .map(|value| value.trim().to_lowercase())
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| "all".to_string());
+
+            let model_verbosity = values
+                .get("model_verbosity")
+                .map(|value| value.trim().to_lowercase())
+                .filter(|value| !value.is_empty());
 
             Ok((
                 name,
@@ -333,12 +404,15 @@ fn parse_llm_profiles(
                     provider: values.get("provider").cloned().unwrap_or_default(),
                     endpoint: values.get("endpoint").cloned().unwrap_or_default(),
                     model,
+                    role,
                     api_key,
                     request_timeout_seconds: timeout,
                     max_tool_rounds,
                     review_max_tokens,
                     code_max_tokens,
                     system_prompt: system_prompt.clone(),
+                    model_verbosity,
+                    review_confidence_threshold,
                 },
             ))
         })
@@ -350,6 +424,17 @@ fn normalize_llm_configuration(llm: &mut LlmConfiguration) -> Result<()> {
     llm.endpoint = llm.endpoint.trim().trim_end_matches('/').to_string();
     llm.model = llm.model.trim().to_string();
     llm.system_prompt = llm.system_prompt.trim().to_string();
+
+    if let Some(ref v) = llm.model_verbosity {
+        match v.as_str() {
+            "terse" | "normal" | "verbose" => {}
+            other => {
+                return Err(anyhow!(
+                    "model_verbosity must be terse, normal, or verbose (got '{other}')"
+                ));
+            }
+        }
+    }
 
     if llm.provider.is_empty() {
         return Err(anyhow!("LLM provider must not be empty"));
@@ -387,6 +472,7 @@ mod tests {
         assert_eq!(conf.llms["gemma"].provider, "llama.cpp");
         assert_eq!(conf.llms["gemma"].request_timeout_seconds, 45);
         assert_eq!(conf.llms["gemma"].max_tool_rounds, 12);
+        assert!(conf.compression);
         // Absent platform defaults to GitHub.
         assert_eq!(conf.platform, "github");
     }
@@ -414,6 +500,27 @@ mod tests {
         let conf = load_client_configuration(file.path()).unwrap();
         assert_eq!(conf.llms["a"].review_max_tokens, 2048);
         assert_eq!(conf.llms["a"].code_max_tokens, 4096);
+    }
+
+    #[test]
+    fn parses_compression_with_default_and_override() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert!(conf.compression);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\ncompression = off\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert!(!conf.compression);
     }
 
     #[test]
@@ -588,5 +695,49 @@ mod tests {
             err.to_string().contains("unique endpoint"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn parses_and_finds_roles() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\nrole = all\n\n[b]\nprovider = llama.cpp\nendpoint = http://y/v1\nmodel = n\nrole = explorer\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.find_server_for_role("explorer"), "b");
+        assert_eq!(conf.find_server_for_role("review"), "a");
+        assert_eq!(conf.find_server_for_role("missing"), "a"); // fallback
+    }
+}
+
+pub fn load_agents_instructions(workspace: &std::path::Path) -> String {
+    let global_agents = home::home_dir()
+        .map(|h| h.join(".orangu/AGENTS.md"))
+        .unwrap_or_default();
+    let local_agents = workspace.join("AGENTS.md");
+
+    let mut agents_content = String::new();
+    if global_agents.exists()
+        && let Ok(content) = std::fs::read_to_string(&global_agents)
+    {
+        agents_content.push_str(&content);
+        agents_content.push('\n');
+    }
+    if local_agents.exists()
+        && let Ok(content) = std::fs::read_to_string(&local_agents)
+    {
+        agents_content.push_str(&content);
+        agents_content.push('\n');
+    }
+
+    if agents_content.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n# AGENTS.md instructions for project\n<INSTRUCTIONS>\n{}</INSTRUCTIONS>\n",
+            agents_content
+        )
     }
 }

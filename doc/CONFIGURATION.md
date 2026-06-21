@@ -21,6 +21,7 @@ timeout = 1800
 max_tool_rounds = 10
 review_max_tokens = 512
 code_max_tokens = 0
+compression = on
 ```
 
 | Key | Required | Description |
@@ -31,6 +32,7 @@ code_max_tokens = 0
 | `max_tool_rounds` | No | Maximum tool-calling turns per prompt. Defaults to `10` |
 | `review_max_tokens` | No | Response-token cap for each `/auto_review` request. Defaults to `512`; `0` disables the cap. Raise it (e.g. `2048`) when the review model thinks before answering |
 | `code_max_tokens` | No | Response-token cap for normal chat and tool responses. Defaults to `0` (no cap) |
+| `compression` | No | Enable orangu's built-in compression layer. This provides context deduplication, file read stubbing, and advanced shell output compression (handles `cargo`, `ls`, `grep`/`rg`, `npm`/`yarn`/`pip`, and diff truncations). Defaults to `on`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width for the output canvas. Source lines from `/show_file` are laid out at this width and can be panned horizontally. Defaults to `512` |
 | `banner` | No | Horizontal placement of the header banner. Defaults to `left`. Options: `left`, `center`, `right` |
@@ -47,6 +49,7 @@ the host information for that server.
 
 ```ini
 [main-server]
+role = all
 provider = llama.cpp
 endpoint = http://localhost:8100/v1
 model = ggml-org/gemma-4-E4B-it-GGUF
@@ -57,6 +60,7 @@ model = ggml-org/gemma-4-E4B-it-GGUF
 | `provider` | Yes | `llama.cpp` or `openai` |
 | `endpoint` | Yes | OpenAI-compatible server URL |
 | `model` | No | Model identifier sent to the server. Overrides the general `[orangu].model` when set |
+| `role` | No | A specific role this server fulfills. Valid roles are: `all` (default), `code`, `review`, and `explorer`. If a specific subsystem needs a server and one is tagged with its role, it will use that server instead of the default. |
 | `api_key` | No | API key sent as `Authorization: Bearer <key>` on every request to the server (chat completions and model listing). Required when a llama.cpp server is started with `--api-key`, or for any authenticated OpenAI-compatible endpoint |
 
 At least one of `[orangu].model` or a server's own `model` must be set, so every

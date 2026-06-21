@@ -32,8 +32,14 @@ use walkdir::WalkDir;
 #[derive(Clone)]
 pub struct ToolExecutor {
     workspace: PathBuf,
-    http_client: Client,
+    http_client: reqwest::Client,
     tool_duration: Arc<Mutex<std::time::Duration>>,
+    compression_enabled: bool,
+    read_only: bool,
+    context_cache: Arc<Mutex<crate::context::ContextCache>>,
+    pub compression_metrics: Arc<Mutex<crate::compression::CompressionMetrics>>,
+    auto_downsample_lines: usize,
+    diff_file_cap: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -41,6 +47,13 @@ struct ReadFileRequest {
     path: String,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    /// Optional read mode:
+    /// - `"full"` (default) — return the whole file (or the requested line range)
+    /// - `"signatures"` — return only public item signatures (pub fn, pub struct,
+    ///   pub enum, pub trait, impl blocks, doc comments), stripping function bodies
+    /// - `"map"` — return a one-line-per-item structural overview (module-level
+    ///   items only, no bodies or doc comments)
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,11 +91,34 @@ struct ShellCommandResult {
 }
 
 impl ToolExecutor {
-    pub fn new(workspace: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace: &Path) -> Self {
+        Self::with_config(workspace, true, 300, 20)
+    }
+
+    pub fn new_read_only(workspace: &Path) -> Self {
+        let mut executor = Self::with_config(workspace, true, 300, 20);
+        executor.read_only = true;
+        executor
+    }
+
+    pub fn with_config(
+        workspace: &Path,
+        compression_enabled: bool,
+        auto_downsample_lines: usize,
+        diff_file_cap: usize,
+    ) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: workspace.to_path_buf(),
             http_client: Client::new(),
             tool_duration: Arc::new(Mutex::new(std::time::Duration::ZERO)),
+            compression_enabled,
+            read_only: false,
+            context_cache: Arc::new(Mutex::new(crate::context::ContextCache::new())),
+            compression_metrics: Arc::new(Mutex::new(
+                crate::compression::CompressionMetrics::default(),
+            )),
+            auto_downsample_lines,
+            diff_file_cap,
         }
     }
 
@@ -90,22 +126,33 @@ impl ToolExecutor {
         self.tool_duration.lock().map(|d| *d).unwrap_or_default()
     }
 
+    pub fn diff_file_cap(&self) -> usize {
+        self.diff_file_cap
+    }
+
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![
-            tool(
-                "read_file",
-                "Read a text file from disk, optionally returning only a line range.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "start_line": {"type": "integer"},
-                        "end_line": {"type": "integer"}
-                    },
-                    "required": ["path"]
-                }),
-            ),
-            tool(
+        let mut defs = vec![tool(
+            "read_file",
+            "Read a text file from disk, optionally returning only a line range. \
+                 When investigating unfamiliar code, leave `start_line` and `end_line` empty \
+                 to read the entire file. Use `mode` to get structural overviews.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["full", "signatures", "map"]
+                    }
+                },
+                "required": ["path"]
+            }),
+        )];
+
+        if !self.read_only {
+            defs.push(tool(
                 "edit_file",
                 "Edit a file on disk in the current workspace by replacing old_text with new_text. If the file does not exist it is created (mode 0644) with new_text as its contents.",
                 json!({
@@ -118,55 +165,87 @@ impl ToolExecutor {
                     },
                     "required": ["path", "old_text", "new_text"]
                 }),
-            ),
-            tool(
-                "list_directory",
-                "List files and directories under the workspace.",
+            ));
+            defs.push(tool(
+                "explore_repository",
+                "Spin up an independent explorer subagent to find relevant files and line ranges. Use this for broad searches so you don't pollute your own context. It returns a <final_answer> block with citations.",
                 json!({
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "max_depth": {"type": "integer"}
-                    }
-                }),
-            ),
-            tool(
-                "fetch_url",
-                "Fetch an external URL and return readable text content.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string"},
-                        "max_chars": {"type": "integer"}
+                        "query": {"type": "string"}
                     },
-                    "required": ["url"]
+                    "required": ["query"]
                 }),
-            ),
-            tool(
-                "run_shell_command",
-                "Run a shell command inside the workspace.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "cwd": {"type": "string"},
-                        "timeout_seconds": {"type": "integer"}
-                    },
-                    "required": ["command"]
-                }),
-            ),
-        ]
+            ));
+        }
+
+        defs.push(tool(
+            "list_directory",
+            "List files and directories under the workspace.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "max_depth": {"type": "integer"}
+                }
+            }),
+        ));
+        defs.push(tool(
+            "fetch_url",
+            "Fetch an external URL and return readable text content.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "integer"}
+                },
+                "required": ["url"]
+            }),
+        ));
+        defs.push(tool(
+            "run_shell_command",
+            "Run a shell command inside the workspace. Recognized high-volume output may be compressed before truncation to preserve the most useful lines.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "timeout_seconds": {"type": "integer"}
+                },
+                "required": ["command"]
+            }),
+        ));
+
+        defs
     }
 
     pub fn workspace(&self) -> &Path {
         &self.workspace
     }
 
+    /// Expose the session-local file context cache for persistence across runs.
+    pub fn context_cache(&self) -> &std::sync::Mutex<crate::context::ContextCache> {
+        &self.context_cache
+    }
+
     pub async fn execute(&self, name: &str, arguments: &Map<String, Value>) -> Result<String> {
         let start = std::time::Instant::now();
         let result = match name {
             "read_file" => self.read_file(arguments).await,
-            "edit_file" => self.edit_file(arguments).await,
+            "edit_file" => {
+                if self.read_only {
+                    Err(anyhow::anyhow!("tool not available in read-only mode"))
+                } else {
+                    self.edit_file(arguments).await
+                }
+            }
+            "explore_repository" => {
+                if self.read_only {
+                    Err(anyhow::anyhow!("tool not available in read-only mode"))
+                } else {
+                    crate::explorer::run_explorer_subagent(&self.workspace, arguments).await
+                }
+            }
             "list_directory" => self.list_directory(arguments).await,
             "fetch_url" => self.fetch_url(arguments).await,
             "run_shell_command" => self.run_shell_command(arguments).await,
@@ -181,8 +260,47 @@ impl ToolExecutor {
     async fn read_file(&self, arguments: &Map<String, Value>) -> Result<String> {
         let args: ReadFileRequest = serde_json::from_value(Value::Object(arguments.clone()))?;
         let path = self.resolve_workspace_path(&args.path)?;
-        let content = fs::read_to_string(&path)?;
-        Ok(render_file_slice(&content, args.start_line, args.end_line))
+        let mut content = fs::read_to_string(&path)?;
+
+        redact_secrets(&mut content);
+
+        if self.compression_enabled
+            && args.start_line.is_none()
+            && args.end_line.is_none()
+            && let Ok(metadata) = fs::metadata(&path)
+        {
+            let mut cache = self.context_cache.lock().unwrap();
+            let fingerprint = cache.fingerprint(&content, &metadata);
+            let cache_result = cache.check_file(&path, &content, &fingerprint);
+            if let crate::context::CacheResult::Hit { fingerprint } = cache_result {
+                return Ok(crate::context::format_cache_stub(
+                    &args.path,
+                    metadata.len(),
+                    &fingerprint,
+                ));
+            }
+            cache.record_read(&path, fingerprint);
+        }
+
+        if self.compression_enabled
+            && args.mode.is_none()
+            && args.start_line.is_none()
+            && args.end_line.is_none()
+            && self.auto_downsample_lines > 0
+            && content.lines().count() > self.auto_downsample_lines
+        {
+            let mut downsampled = extract_signatures(&content);
+            if downsampled != content {
+                downsampled.push_str(&format!("\n[Note: This file exceeds {} lines and has been automatically downsampled to 'signatures' mode. Use start_line and end_line bounds to read specific full bodies.]\n", self.auto_downsample_lines));
+                return Ok(downsampled);
+            }
+        }
+
+        Ok(match args.mode.as_deref() {
+            Some("signatures") => extract_signatures(&content),
+            Some("map") => extract_map(&content),
+            _ => render_file_slice(&content, args.start_line, args.end_line),
+        })
     }
 
     async fn edit_file(&self, arguments: &Map<String, Value>) -> Result<String> {
@@ -300,10 +418,71 @@ impl ToolExecutor {
             .await
             .map_err(|_| anyhow!("command timed out after {:?}", timeout))??;
 
+        let stdout_raw = String::from_utf8_lossy(&output.stdout);
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+
+        let (stdout_compressed, stderr_compressed) = if self.compression_enabled {
+            let (compressed_out, out_stats) = crate::compression::compress_shell_output_with_stats(
+                &args.command,
+                &stdout_raw,
+                self.diff_file_cap,
+            );
+            let (compressed_err, err_stats) = crate::compression::compress_shell_output_with_stats(
+                &args.command,
+                &stderr_raw,
+                self.diff_file_cap,
+            );
+
+            let mut compressed_out = compressed_out;
+            let mut compressed_err = compressed_err;
+
+            if out_stats.pattern_matched.as_deref() == Some("generic")
+                && out_stats.compressed_lines < out_stats.original_lines
+            {
+                let tmp_dir = self.workspace.join(".orangu/tmp");
+                let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+                let log_path = tmp_dir.join("cmd_stdout.log");
+                if tokio::fs::write(&log_path, stdout_raw.as_bytes())
+                    .await
+                    .is_ok()
+                {
+                    compressed_out.push_str(&format!(
+                        "\n\n[Raw stdout diverted to {} due to size. Read this file for missing details.]",
+                        log_path.display()
+                    ));
+                }
+            }
+
+            if err_stats.pattern_matched.as_deref() == Some("generic")
+                && err_stats.compressed_lines < err_stats.original_lines
+            {
+                let tmp_dir = self.workspace.join(".orangu/tmp");
+                let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+                let log_path = tmp_dir.join("cmd_stderr.log");
+                if tokio::fs::write(&log_path, stderr_raw.as_bytes())
+                    .await
+                    .is_ok()
+                {
+                    compressed_err.push_str(&format!(
+                        "\n\n[Raw stderr diverted to {} due to size. Read this file for missing details.]",
+                        log_path.display()
+                    ));
+                }
+            }
+
+            if let Ok(mut metrics) = self.compression_metrics.lock() {
+                metrics.record(&out_stats);
+                metrics.record(&err_stats);
+            }
+            (compressed_out, compressed_err)
+        } else {
+            (stdout_raw.to_string(), stderr_raw.to_string())
+        };
+
         let result = ShellCommandResult {
             exit_code: output.status.code().unwrap_or(-1),
-            stdout: truncate_text(&String::from_utf8_lossy(&output.stdout), 20_000),
-            stderr: truncate_text(&String::from_utf8_lossy(&output.stderr), 20_000),
+            stdout: truncate_text(&stdout_compressed, 20_000),
+            stderr: truncate_text(&stderr_compressed, 20_000),
         };
         Ok(serde_json::to_string_pretty(&result)?)
     }
@@ -405,6 +584,157 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     format!("{truncated}\n\n[truncated]")
 }
 
+/// Extract public item signatures from file content, stripping function bodies.
+///
+/// Keeps: doc comments (`///`, `//!`), `pub fn`, `pub struct`, `pub enum`,
+/// `pub trait`, `pub type`, `pub const`, `pub static`, `impl` blocks (header
+/// only), `mod` declarations, `use` statements, and attribute lines (`#[…]`).
+/// Strips: private items and function bodies (lines between `{` and matching `}`).
+///
+/// This is a line-based approximation — no full AST — suitable for v1. It
+/// works well for idiomatic Rust where bodies are indented and opening braces
+/// are on the same line as the signature.
+fn extract_signatures(content: &str) -> String {
+    let mut result: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut in_body = false;
+    let mut last_was_blank = false;
+
+    // Patterns that mark the START of a signature line we want to keep.
+    fn is_signature_line(line: &str) -> bool {
+        let t = line.trim_start();
+        t.starts_with("pub fn ")
+            || t.starts_with("pub async fn ")
+            || t.starts_with("pub unsafe fn ")
+            || t.starts_with("pub struct ")
+            || t.starts_with("pub enum ")
+            || t.starts_with("pub trait ")
+            || t.starts_with("pub type ")
+            || t.starts_with("pub const ")
+            || t.starts_with("pub static ")
+            || t.starts_with("pub mod ")
+            || t.starts_with("pub use ")
+            || t.starts_with("pub(crate) fn ")
+            || t.starts_with("pub(crate) struct ")
+            || t.starts_with("pub(crate) enum ")
+            || t.starts_with("pub(crate) trait ")
+            || t.starts_with("pub(crate) type ")
+            || t.starts_with("pub(crate) const ")
+            || t.starts_with("pub(crate) mod ")
+            || t.starts_with("impl ")
+            || t.starts_with("mod ")
+            || t.starts_with("use ")
+            || t.starts_with("//!")
+            || t.starts_with("///")
+            || t.starts_with("#[")
+            || t.starts_with("#![")
+    }
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track brace depth to skip bodies.
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+
+        if in_body {
+            depth += opens - closes;
+            if depth <= 0 {
+                in_body = false;
+                depth = 0;
+                // Emit a closing marker so the reader can see blocks end.
+                result.push("    // ...".to_string());
+            }
+            continue;
+        }
+
+        if is_signature_line(line) {
+            // Suppress multiple consecutive blank lines before signatures.
+            if !trimmed.is_empty() && last_was_blank {
+                result.push(String::new());
+            }
+            result.push(line.to_string());
+
+            // If this line opens a body brace (and doesn't close it on the
+            // same line), enter body-skip mode.
+            let net = opens - closes;
+            if net > 0 {
+                in_body = true;
+                depth = net;
+            }
+        }
+
+        last_was_blank = trimmed.is_empty();
+    }
+
+    if result.is_empty() {
+        // Fallback: file may not be Rust or has no public items — return as-is.
+        return content.to_string();
+    }
+
+    format!(
+        "[signatures mode — bodies stripped]\n\n{}\n",
+        result.join("\n")
+    )
+}
+
+/// Return a one-line-per-item structural map of the file. Even more compact
+/// than `signatures` — only top-level item headers, no doc comments, no
+/// attribute lines, no `use` statements.
+fn extract_map(content: &str) -> String {
+    let mut items: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+
+    fn is_map_item(line: &str) -> bool {
+        let t = line.trim_start();
+        (t.starts_with("pub ") || t.starts_with("impl ") || t.starts_with("mod "))
+            && !t.starts_with("pub use ")
+            && !t.starts_with("pub(crate) use ")
+    }
+
+    for line in content.lines() {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+
+        // Only capture top-level items (depth == 0 before this line).
+        if depth == 0 && is_map_item(line) {
+            // Trim the body if it starts on the same line: keep only up to `{`.
+            let display = if let Some(brace_pos) = line.find('{') {
+                line[..brace_pos].trim_end().to_string() + " { ... }"
+            } else {
+                line.trim_end().to_string()
+            };
+            items.push(display);
+        }
+
+        depth = (depth + opens - closes).max(0);
+    }
+
+    if items.is_empty() {
+        return content.to_string();
+    }
+
+    format!(
+        "[map mode — top-level items only]\n\n{}\n",
+        items.join("\n")
+    )
+}
+
+fn redact_secrets(content: &mut String) {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static SECRET_REGEX: OnceLock<Regex> = OnceLock::new();
+    let re = SECRET_REGEX.get_or_init(|| {
+        Regex::new(r"(?P<prefix>ghp_[a-zA-Z0-9]{36}|sk-ant-[a-zA-Z0-9_-]{30,}|AKIA[0-9A-Z]{16})")
+            .unwrap()
+    });
+
+    if re.is_match(content) {
+        *content = re.replace_all(content, "[REDACTED_SECRET]").to_string();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,10 +787,222 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello orangu");
     }
 
+    #[tokio::test]
+    async fn read_file_returns_cache_stub_on_repeated_unchanged_full_read() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("README.md");
+        fs::write(&path, "one\ntwo\n").unwrap();
+        let executor = ToolExecutor::new(workspace.path());
+
+        let mut args = Map::new();
+        args.insert("path".into(), json!("README.md"));
+
+        let first = executor.read_file(&args).await.unwrap();
+        assert!(first.contains("1. one"));
+        assert!(first.contains("2. two"));
+
+        let second = executor.read_file(&args).await.unwrap();
+        assert!(second.starts_with("[cached] README.md is unchanged"));
+        assert!(second.contains("start_line/end_line"));
+    }
+
+    #[tokio::test]
+    async fn read_file_returns_full_content_again_after_change() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("README.md");
+        fs::write(&path, "one\ntwo\n").unwrap();
+        let executor = ToolExecutor::new(workspace.path());
+
+        let mut args = Map::new();
+        args.insert("path".into(), json!("README.md"));
+
+        let _ = executor.read_file(&args).await.unwrap();
+        let _ = executor.read_file(&args).await.unwrap();
+
+        fs::write(&path, "one\ntwo\nthree\n").unwrap();
+
+        let changed = executor.read_file(&args).await.unwrap();
+        assert!(changed.contains("1. one"));
+        assert!(changed.contains("2. two"));
+        assert!(changed.contains("3. three"));
+        assert!(!changed.starts_with("[cached]"));
+    }
+
+    #[tokio::test]
+    async fn run_shell_command_compresses_cargo_test_success_noise() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cargo = workspace.path().join("cargo");
+        fs::write(
+            &cargo,
+            "#!/usr/bin/env bash\nprintf 'running 3 tests\\ntest a ... ok\\ntest b ... ok\\ntest c ... ok\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executor = ToolExecutor::new(workspace.path());
+
+        let mut args = Map::new();
+        args.insert("command".into(), json!("./cargo test"));
+
+        let rendered = executor.run_shell_command(&args).await.unwrap();
+        assert!(rendered.contains("... (3 tests passed)"));
+        assert!(!rendered.contains("test a ... ok"));
+        assert!(!rendered.contains("test b ... ok"));
+        assert!(!rendered.contains("test c ... ok"));
+    }
+
+    #[tokio::test]
+    async fn run_shell_command_keeps_cargo_test_failures_visible() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cargo = workspace.path().join("cargo");
+        fs::write(
+            &cargo,
+            "#!/usr/bin/env bash\nprintf 'running 3 tests\\ntest a ... ok\\ntest b ... FAILED\\nfailures:\\n---- test b stdout ----\\npanicked at boom\\ntest result: FAILED. 1 passed; 1 failed\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executor = ToolExecutor::new(workspace.path());
+
+        let mut args = Map::new();
+        args.insert("command".into(), json!("./cargo test"));
+
+        let rendered = executor.run_shell_command(&args).await.unwrap();
+        assert!(rendered.contains("test b ... FAILED"));
+        assert!(rendered.contains("failures:"));
+        assert!(rendered.contains("panicked at boom"));
+        assert!(!rendered.contains("test a ... ok"));
+    }
+
+    #[tokio::test]
+    async fn read_file_without_compression_returns_full_content_on_repeat() {
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace.path().join("README.md");
+        fs::write(&path, "one\ntwo\n").unwrap();
+        let executor = ToolExecutor::with_config(workspace.path(), false, 300, 20);
+
+        let mut args = Map::new();
+        args.insert("path".into(), json!("README.md"));
+
+        let first = executor.read_file(&args).await.unwrap();
+        let second = executor.read_file(&args).await.unwrap();
+
+        assert_eq!(first, second);
+        assert!(!second.starts_with("[cached]"));
+    }
+
+    #[tokio::test]
+    async fn run_shell_command_without_compression_keeps_raw_output() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cargo = workspace.path().join("cargo");
+        fs::write(
+            &cargo,
+            "#!/usr/bin/env bash\nprintf 'running 2 tests\\ntest a ... ok\\ntest b ... ok\\n'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let executor = ToolExecutor::with_config(workspace.path(), false, 300, 20);
+
+        let mut args = Map::new();
+        args.insert("command".into(), json!("./cargo test"));
+
+        let rendered = executor.run_shell_command(&args).await.unwrap();
+        assert!(rendered.contains("test a ... ok"));
+        assert!(rendered.contains("test b ... ok"));
+        assert!(!rendered.contains("tests passed"));
+    }
+
     #[test]
     fn rejects_path_escape() {
         let workspace = PathBuf::from("/tmp/workspace");
         let err = resolve_workspace_path(&workspace, "../outside").unwrap_err();
         assert!(err.to_string().contains("escapes"));
+    }
+
+    #[test]
+    fn signatures_mode_strips_bodies_keeps_pub_fn() {
+        let src = "
+pub fn hello() {
+    println!(\"hi\");
+}
+
+fn private_fn() {
+    // private body
+}
+
+/// A doc comment.
+pub struct Foo {
+    pub x: i32,
+}
+";
+        let result = extract_signatures(src);
+        assert!(
+            result.contains("[signatures mode"),
+            "should have mode header"
+        );
+        assert!(result.contains("pub fn hello()"), "should keep pub fn");
+        assert!(!result.contains("println!"), "should strip body");
+        assert!(!result.contains("private_fn"), "should skip private fn");
+        assert!(
+            result.contains("/// A doc comment."),
+            "should keep doc comment"
+        );
+        assert!(result.contains("pub struct Foo"), "should keep pub struct");
+    }
+
+    #[test]
+    fn signatures_mode_fallback_for_no_pub_items() {
+        let src = "fn private() {}";
+        let result = extract_signatures(src);
+        // Falls back to returning content as-is when nothing matches.
+        assert_eq!(result, src);
+    }
+
+    #[test]
+    fn map_mode_only_top_level_items() {
+        let src = "
+pub struct Foo { x: i32 }
+
+impl Foo {
+    pub fn method(&self) {}
+}
+
+pub fn standalone() {}
+";
+        let result = extract_map(src);
+        assert!(result.contains("[map mode"), "should have mode header");
+        assert!(result.contains("pub struct Foo"), "top-level struct");
+        assert!(result.contains("impl Foo"), "impl block header");
+        assert!(result.contains("pub fn standalone()"), "top-level fn");
+        // method() is inside impl, should NOT appear as separate item
+        assert!(
+            !result.contains("pub fn method"),
+            "nested fn should not appear"
+        );
+    }
+
+    #[test]
+    fn grep_context_is_compact_under_limit() {
+        use crate::compression::prepare_llm_grep_context;
+        let output = "src/foo.rs:10:    pub fn foo() {}\nsrc/bar.rs:20:    pub fn bar() {}";
+        let ctx = prepare_llm_grep_context("fn foo", output, true);
+        // Under 40 matches — all should appear, no omission note.
+        assert!(ctx.content.contains("src/foo.rs"));
+        assert!(ctx.note.is_none());
+    }
+
+    #[test]
+    fn grep_context_truncates_over_limit() {
+        use crate::compression::prepare_llm_grep_context;
+        // Generate 50 fake match lines.
+        let output: String = (0..50)
+            .map(|i| format!("src/x.rs:{i}: fn item_{i}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ctx = prepare_llm_grep_context("item", &output, true);
+        assert!(ctx.note.is_some(), "should have truncation note");
+        let note = ctx.note.unwrap();
+        assert!(note.contains("40 of 50"), "should mention counts");
     }
 }

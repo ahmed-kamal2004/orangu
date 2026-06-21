@@ -135,3 +135,9 @@ so workspace tools can inspect and edit it like normal project files. User
 skills under `~/.orangu/skills` or `~/.agents/skills` are still useful for
 portable instructions, but project-local helper code is easier for the model to
 build, test, and modify.
+
+## Workspace Memory (AGENTS.md)
+
+In addition to explicit `SKILL.md` commands, orangu supports global and workspace-level memory injection using `AGENTS.md` files. 
+
+If you create a file at `~/.orangu/AGENTS.md` or in your project root at `<workspace>/AGENTS.md`, orangu will automatically read the contents and inject them as persistent rules into every chat and code review session. This is the ideal place to document project-wide architectural decisions, language preferences, or rules that should always be active without needing to be explicitly invoked like a skill.

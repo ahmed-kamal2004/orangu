@@ -123,7 +123,14 @@ pub enum CommandOutcome {
     Quiet,
     /// Command ran and produced informational output (success).
     Output(String),
-    WideOutput(String),
+    OutputWithLlmContext {
+        display: String,
+        llm_context: String,
+    },
+    WideOutputWithLlmContext {
+        display: String,
+        llm_context: String,
+    },
     /// Command failed — invalid usage, unknown command, or other error.
     OutputError(String),
     Cleared,
@@ -332,6 +339,8 @@ pub enum LocalCommand<'a> {
     SetModelId(&'a str),
     ServerInfo,
     SetServer(&'a str),
+
+    SetVerbosity(&'a str),
     Diff(Option<Cow<'a, str>>),
     Grep(Option<Cow<'a, str>>),
     Review,
@@ -399,6 +408,7 @@ pub struct CommandContext<'a> {
     pub virtual_width: usize,
     pub auto_rebase: bool,
     pub auto_squash: bool,
+    pub compression: bool,
     pub terminal: &'a str,
     pub forge: crate::git::Forge,
     pub review_reports: crate::git::ReviewReports<'a>,
@@ -422,25 +432,51 @@ pub fn parse_local_command(input: &str) -> Option<LocalCommand<'_>> {
     parse_slash_command(input).or_else(|| parse_natural_language_command(input))
 }
 
-pub fn system_prompt(profile: &LlmConfiguration) -> &str {
-    if profile.system_prompt.is_empty() {
-        "You are Orangu, a coding environment assistant connected to a local workspace. Use the available local tools to inspect files, edit files on disk, fetch external URLs for knowledge, and run shell commands when needed. Be precise, explain what you changed, and surface tool failures explicitly."
+pub fn system_prompt<'a>(
+    profile: &'a LlmConfiguration,
+    verbosity_override: Option<&str>,
+) -> Cow<'a, str> {
+    let mut base = if profile.system_prompt.is_empty() {
+        Cow::Borrowed(
+            "You are Orangu, a coding environment assistant connected to a local workspace. Use the available local tools to inspect files, edit files on disk, fetch external URLs for knowledge, and run shell commands when needed. Be precise, explain what you changed, and surface tool failures explicitly.",
+        )
     } else {
-        &profile.system_prompt
+        Cow::Borrowed(profile.system_prompt.as_str())
+    };
+
+    let verbosity = verbosity_override.or(profile.model_verbosity.as_deref());
+    if let Some(v) = verbosity {
+        if v == "terse" {
+            let mut s = base.into_owned();
+            s.push_str("\n\nBe extremely terse and concise. Do not restate context. Provide only the requested answer or code.");
+            base = Cow::Owned(s);
+        } else if v == "verbose" {
+            let mut s = base.into_owned();
+            s.push_str(
+                "\n\nBe very detailed and explain your thought process and any decisions made.",
+            );
+            base = Cow::Owned(s);
+        }
     }
+
+    base
 }
 
-pub fn system_prompt_with_skills(
+pub fn build_workspace_system_prompt(
     profile: &LlmConfiguration,
     skills: &orangu::skills::SkillRegistry,
+    workspace: &Path,
+    verbosity_override: Option<&str>,
 ) -> String {
-    let base = system_prompt(profile);
+    let base = system_prompt(profile, verbosity_override);
     let index = skills.system_prompt_index();
-    if index.is_empty() {
-        base.to_string()
+    let mut ep = if index.is_empty() {
+        base.into_owned()
     } else {
         format!("{base}\n\n{index}")
-    }
+    };
+    ep.push_str(&orangu::config::load_agents_instructions(workspace));
+    ep
 }
 
 pub fn sorted_model_names(llms: &HashMap<String, LlmConfiguration>) -> Vec<String> {

@@ -26,6 +26,8 @@ pub struct ChatSession {
     /// connection pool survives between requests. Rebuilt only when the
     /// profile fields that shape the client change.
     client: Option<(ClientKey, OpenAiClient)>,
+
+    pub model_verbosity_override: Option<String>,
 }
 
 /// The subset of [`LlmConfiguration`] that the [`OpenAiClient`] is built from.
@@ -58,6 +60,8 @@ impl ChatSession {
         Self {
             messages: vec![ChatMessage::system(system_prompt)],
             client: None,
+
+            model_verbosity_override: None,
         }
     }
 
@@ -75,6 +79,10 @@ impl ChatSession {
         self.messages.push(ChatMessage::system(system_prompt));
     }
 
+    pub fn push_user(&mut self, content: &str) {
+        self.messages.push(ChatMessage::user(content));
+    }
+
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
     }
@@ -89,6 +97,17 @@ impl ChatSession {
 
     pub fn rollback(&mut self, checkpoint: usize) {
         self.messages.truncate(checkpoint);
+    }
+
+    pub fn compact_transcript(&mut self) {
+        let mut user_turns = 0;
+        for msg in self.messages.iter_mut().rev() {
+            if msg.role == "user" {
+                user_turns += 1;
+            } else if msg.role == "tool" && user_turns > 3 && msg.content.len() > 500 {
+                msg.content = "[Tool output evicted to save tokens]".to_string();
+            }
+        }
     }
 
     /// One-shot prompt with no tool definitions and a capped response length:
@@ -156,6 +175,8 @@ impl ChatSession {
         G: FnMut(StreamMetrics),
         H: FnMut(bool),
     {
+        self.compact_transcript();
+
         let key = ClientKey::from_profile(profile);
         if self
             .client
@@ -240,12 +261,15 @@ mod tests {
             provider: "llama.cpp".to_string(),
             endpoint: endpoint.to_string(),
             model: "test-model".to_string(),
+            role: "all".to_string(),
             api_key: None,
             request_timeout_seconds: 5,
             max_tool_rounds: 10,
             review_max_tokens: 512,
+            review_confidence_threshold: 80,
             code_max_tokens: 0,
-            system_prompt: String::new(),
+            system_prompt: "".to_string(),
+            model_verbosity: None,
         }
     }
 

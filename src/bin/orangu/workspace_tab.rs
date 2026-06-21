@@ -80,6 +80,9 @@ impl WorkspaceTab {
         resume: Option<&str>,
         auto_resume: bool,
         system_prompt: &str,
+        compression_enabled: bool,
+        auto_downsample_lines: usize,
+        diff_file_cap: usize,
     ) -> Result<Self> {
         let workspace_created = if !workspace.exists() {
             std::fs::create_dir_all(&workspace)
@@ -88,7 +91,12 @@ impl WorkspaceTab {
         } else {
             false
         };
-        let tools = ToolExecutor::new(&workspace);
+        let tools = ToolExecutor::with_config(
+            &workspace,
+            compression_enabled,
+            auto_downsample_lines,
+            diff_file_cap,
+        );
         let skills = orangu::skills::SkillRegistry::discover(&workspace);
         let current_branch = workspace_branch_name(&workspace);
 
@@ -131,11 +139,14 @@ impl WorkspaceTab {
 
         let enhanced_prompt = {
             let index = skills.system_prompt_index();
-            if index.is_empty() {
+            let mut ep = if index.is_empty() {
                 system_prompt.to_string()
             } else {
                 format!("{system_prompt}\n\n{index}")
-            }
+            };
+
+            ep.push_str(&orangu::config::load_agents_instructions(&workspace));
+            ep
         };
         let mut session = ChatSession::new(&enhanced_prompt);
         if is_resumed {
@@ -372,16 +383,6 @@ mod tests {
             startup_notice_until: None,
             pending_response: None,
         }
-    }
-
-    fn workspaces(ring: &WorkspaceRing, active: &WorkspaceTab) -> Vec<String> {
-        let mut result = ring
-            .parked()
-            .iter()
-            .map(|t| t.session_id.clone())
-            .collect::<Vec<_>>();
-        result.insert(ring.active_pos(), active.session_id.clone());
-        result
     }
 
     #[test]
