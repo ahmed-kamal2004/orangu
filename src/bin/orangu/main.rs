@@ -31,6 +31,7 @@ mod shell;
 mod stats;
 mod terminal;
 mod wait;
+mod workspace_tab;
 
 #[cfg(test)]
 mod test_support;
@@ -53,9 +54,10 @@ use orangu::{
     tui::{
         AutoReviewRejectView, AutoReviewScreenArgs, FEEDBACK_ERR, FEEDBACK_OK, ReviewCommentEditor,
         ReviewEntry, ReviewFeedbackView, ReviewScreenArgs, ReviewStatus, ScreenRenderArgs,
-        StatusFragment, auto_review_pane_body_height, render_auto_review_screen,
-        render_review_screen, render_screen, render_thinking_status, render_tool_running_status,
-        render_working_status, review_pane_body_height, terminal_height, terminal_width,
+        StatusFragment, TabStatus, WorkspaceTabsView, auto_review_pane_body_height,
+        render_auto_review_screen, render_review_screen, render_screen, render_thinking_status,
+        render_tool_running_status, render_working_status, review_pane_body_height,
+        terminal_height, terminal_width,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -79,7 +81,6 @@ use commands::{
     merge_usage_message, model_usage_message, move_file_usage_message, open_file_usage_message,
     parse_local_command, prune_usage_message, pull_usage_message, remove_file_usage_message,
     restore_usage_message, server_usage_message, sorted_model_names, system_prompt,
-    system_prompt_with_skills,
 };
 use dispatch::*;
 use git::{
@@ -97,8 +98,8 @@ use git::{
 };
 use input::{
     EscapeCancelState, IDLE_STATUS_REFRESH_INTERVAL, InputContext, InputResult, InputState,
-    InterruptState, OutputState, RenderContext, ScreenState, StreamRenderState, ViewportState,
-    WaitContext, WaitResult, handle_input_event, read_input,
+    InterruptState, OutputState, PendingResponse, RenderContext, ScreenState, StreamRenderState,
+    ViewportState, WaitContext, WaitResult, handle_input_event, read_input,
 };
 use models::*;
 use render::{format_tools, render_markdown_for_console, show_file_output};
@@ -107,6 +108,7 @@ use session_store::*;
 use stats::*;
 use terminal::*;
 use wait::*;
+use workspace_tab::{TabAction, WorkspaceRing, WorkspaceTab};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -118,6 +120,10 @@ struct Args {
     workspace: Option<PathBuf>,
     #[arg(short, long)]
     resume: Option<String>,
+    /// Reopen the workspace tabs that were open at the end of the last run
+    /// (saved in ~/.orangu/workspaces).
+    #[arg(short = 'a', long = "all")]
+    all: bool,
     /// Interactively create ~/.orangu/orangu.conf and exit.
     #[arg(short, long)]
     init: bool,
@@ -186,17 +192,6 @@ async fn run() -> Result<()> {
     };
     let config = load_client_configuration(&config_path)?;
     let quote_module = quotes::QuoteModule::from_str(&config.quotes);
-    let workspace = resolve_workspace_root(args.workspace)?;
-    let workspace_created = if !workspace.exists() {
-        std::fs::create_dir_all(&workspace)
-            .with_context(|| format!("Failed to create workspace {}", workspace.display()))?;
-        true
-    } else {
-        false
-    };
-    let tools = ToolExecutor::new(&workspace);
-    let skills = orangu::skills::SkillRegistry::discover(&workspace);
-
     // Remove any binary staged by a previous `/restart`; it is only needed
     // across the exec handoff and must not accumulate.
     clear_restart_dir();
@@ -217,56 +212,38 @@ async fn run() -> Result<()> {
     // server's resolved model and changed at runtime by `/model`.
     let mut active_model_id = startup_profile.model.clone();
     let mut active_model = startup_model.clone();
-    let mut session = ChatSession::new(&system_prompt_with_skills(
+    let mut current_endpoint = Some(startup_endpoint.clone());
+
+    // The system prompt is shared across workspace tabs (per-workspace model
+    // comes later), so it is resolved once and reused when opening tabs.
+    let system_prompt = system_prompt(
         config
             .llms
             .get(&active_model)
             .ok_or_else(|| anyhow!("missing configured server {}", active_model))?,
-        &skills,
-    ));
-    let mut current_endpoint = Some(startup_endpoint.clone());
+    )
+    .to_string();
 
-    let current_branch = workspace_branch_name(&workspace);
-
-    let (session_id, is_resumed) = match &args.resume {
-        Some(id) => (id.clone(), true),
-        None => {
-            let workspace_str = workspace.display().to_string();
-            match find_session_for_workspace_branch(
-                &workspace_str,
-                current_branch.as_deref().unwrap_or(""),
-            ) {
-                Some(existing_id) => (existing_id, true),
-                None => (Uuid::new_v4().to_string(), false),
+    // Open the first workspace tab (tab 1). Each tab is its own session; the
+    // ring holds the others as the user opens more with `/workspace`/Alt+Insert.
+    let initial_tab = WorkspaceTab::open(
+        resolve_workspace_root(args.workspace)?,
+        args.resume.as_deref(),
+        true,
+        &system_prompt,
+    )?;
+    let mut ring = WorkspaceRing::new();
+    // If -a/--all, reopen the workspace tabs that were open at the end of the
+    // last run. Skip paths that equal the initial workspace (already open) and
+    // silently ignore tabs whose directories have since been deleted.
+    if args.all {
+        for saved_workspace in load_open_workspaces() {
+            if saved_workspace != initial_tab.workspace
+                && let Ok(tab) = WorkspaceTab::open(saved_workspace, None, true, &system_prompt)
+            {
+                ring.park(tab);
             }
         }
-    };
-    let session_dir = session_dir_path(&session_id)?;
-    std::fs::create_dir_all(&session_dir).with_context(|| {
-        format!(
-            "failed to create session directory {}",
-            session_dir.display()
-        )
-    })?;
-    let session_hist_path = session_dir.join("history");
-    let session_messages_path = session_dir.join("messages");
-    let session_metadata_path = session_dir.join("metadata");
-
-    if !is_resumed {
-        save_session_metadata(
-            &session_metadata_path,
-            &SessionMetadata {
-                started_at: current_unix_timestamp(),
-                last_updated_at: current_unix_timestamp(),
-                workspace: workspace.display().to_string(),
-                branch: current_branch.clone().unwrap_or_default(),
-            },
-        )?;
-    }
-
-    if is_resumed {
-        let messages = load_session_messages(&session_messages_path)?;
-        session.restore(messages);
     }
 
     let _terminal_ui_guard = TerminalUiGuard::new()?;
@@ -274,36 +251,43 @@ async fn run() -> Result<()> {
     let vw = terminal_width();
     let vh = terminal_height();
     let mut viewport = ViewportState::new(config.width, vw, vh);
-    let mut output_state = OutputState::default();
     let mut interrupt_state = InterruptState::default();
     let mut input_state = InputState::default();
-    let mut pending_commands = VecDeque::new();
-    let mut usage_stats = UsageStats::new().with_session(&session_id);
-    let mut history = load_history(&session_hist_path)?;
     let mut restart_requested = false;
-    // The last `/review` summary and `/auto_review` report (Markdown), kept
-    // so `/comment <number> with [auto] review` can post them.
-    let mut last_review_report: Option<String> = None;
-    let mut last_auto_review_report: Option<String> = None;
-    // Whether the most recently produced report was the `/auto_review` one, so
-    // `/export review` exports the last review the user ran rather than always
-    // preferring one kind over the other.
-    let mut last_review_was_auto = false;
     // When set, the post-loop exec resumes this session instead of the current
     // one — used by `/session <UUID>` to switch sessions in place.
     let mut resume_override: Option<String> = None;
     // When set, the post-loop exec switches to this workspace directory (without
     // a resume target) — used by `/session <path>` to open a new workspace.
     let mut workspace_override: Option<PathBuf> = None;
-    let mut startup_notice_until: Option<std::time::Instant> =
-        if is_resumed && args.resume.is_none() {
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(5))
-        } else {
-            None
-        };
-    if workspace_created {
-        output_state.push_text(&format!("Created workspace {}", workspace.display()));
-    }
+    // A pending workspace tab switch, applied at the top of the next iteration
+    // so it never races the active tab's borrows in the render context.
+    let mut pending_tab_action: Option<TabAction> = None;
+
+    // The active tab's live state lives in these locals, exactly as the single
+    // workspace did before tabs. A tab switch parks them in the ring and unpacks
+    // the target tab back into them (see `apply_tab_action!`).
+    let WorkspaceTab {
+        mut workspace,
+        mut tools,
+        mut skills,
+        mut session,
+        mut output_state,
+        mut pending_commands,
+        mut usage_stats,
+        mut history,
+        mut session_id,
+        mut session_dir,
+        mut session_hist_path,
+        mut session_messages_path,
+        mut session_metadata_path,
+        mut current_branch,
+        mut last_review_report,
+        mut last_auto_review_report,
+        mut last_review_was_auto,
+        mut startup_notice_until,
+        mut pending_response,
+    } = initial_tab;
 
     // If the active server isn't serving the configured model at startup, switch
     // to a model it does advertise.
@@ -345,7 +329,173 @@ async fn run() -> Result<()> {
         tokio::task::spawn_blocking(move || fetch_issue_metadata(&meta_workspace, forge))
     });
 
+    // Workspace tab switching. `current_tab!()` packs the active tab's locals
+    // into a `WorkspaceTab` (moving them out); `load_tab!(t)` unpacks one back
+    // into them; `apply_tab_action!` parks the active tab in the ring and makes
+    // another active. The macros close over the run-loop locals by definition
+    // site, so the loop body keeps using those locals unchanged.
+    macro_rules! current_tab {
+        () => {
+            WorkspaceTab {
+                workspace,
+                tools,
+                skills,
+                session,
+                output_state,
+                pending_commands,
+                usage_stats,
+                history,
+                session_id,
+                session_dir,
+                session_hist_path,
+                session_messages_path,
+                session_metadata_path,
+                current_branch,
+                last_review_report,
+                last_auto_review_report,
+                last_review_was_auto,
+                startup_notice_until,
+                pending_response,
+            }
+        };
+    }
+    macro_rules! load_tab {
+        ($tab:expr) => {{
+            let tab = $tab;
+            workspace = tab.workspace;
+            tools = tab.tools;
+            skills = tab.skills;
+            session = tab.session;
+            output_state = tab.output_state;
+            pending_commands = tab.pending_commands;
+            usage_stats = tab.usage_stats;
+            history = tab.history;
+            session_id = tab.session_id;
+            session_dir = tab.session_dir;
+            session_hist_path = tab.session_hist_path;
+            session_messages_path = tab.session_messages_path;
+            session_metadata_path = tab.session_metadata_path;
+            current_branch = tab.current_branch;
+            last_review_report = tab.last_review_report;
+            last_auto_review_report = tab.last_auto_review_report;
+            last_review_was_auto = tab.last_review_was_auto;
+            startup_notice_until = tab.startup_notice_until;
+            pending_response = tab.pending_response;
+        }};
+    }
+    macro_rules! apply_tab_action {
+        ($action:expr) => {{
+            match $action {
+                TabAction::Next => {
+                    let target = ring.rotate(current_tab!(), 1);
+                    load_tab!(target);
+                }
+                TabAction::Previous => {
+                    let target = ring.rotate(current_tab!(), -1);
+                    load_tab!(target);
+                }
+                TabAction::SwitchTo(index) => {
+                    if index >= ring.total() {
+                        output_state.push_text(&format!("No workspace {} is open.", index + 1));
+                    } else {
+                        let target = ring.switch_to(current_tab!(), index);
+                        load_tab!(target);
+                    }
+                }
+                TabAction::Open(path) => {
+                    if let Some(index) = ring.position_of(&workspace, &path) {
+                        let target = ring.switch_to(current_tab!(), index);
+                        load_tab!(target);
+                    } else {
+                        match WorkspaceTab::open(path, None, true, &system_prompt) {
+                            Ok(new_tab) => {
+                                let target = ring.open(current_tab!(), new_tab);
+                                load_tab!(target);
+                            }
+                            Err(err) => output_state.push_text(&format!("Error: {err:#}")),
+                        }
+                    }
+                }
+                TabAction::New => {
+                    // A fresh tab on the active workspace's directory, with its
+                    // own new session; the user re-points it with `/workspace`.
+                    match WorkspaceTab::open(workspace.clone(), None, false, &system_prompt) {
+                        Ok(new_tab) => {
+                            let target = ring.open(current_tab!(), new_tab);
+                            load_tab!(target);
+                        }
+                        Err(err) => output_state.push_text(&format!("Error: {err:#}")),
+                    }
+                }
+                TabAction::Close => {
+                    if ring.total() == 1 {
+                        output_state.push_text("Only /quit exits orangu.");
+                    } else {
+                        let parked = current_tab!();
+                        let _ = parked.save();
+                        // `total > 1` guarantees a neighbour to focus.
+                        let target = ring.close(parked).expect("more than one tab is open");
+                        load_tab!(target);
+                    }
+                }
+            }
+            output_state.reset_scroll();
+        }};
+    }
+    // Persist every open tab on exit so each one stays resumable — the active
+    // tab from its locals, plus every parked tab in the ring. Also record the
+    // open workspace paths so `orangu -a` can restore the layout next time.
+    macro_rules! save_all_tabs {
+        () => {{
+            save_session_messages(&session_messages_path, session.messages())?;
+            update_session_metadata_timestamp(&session_metadata_path)?;
+            for tab in ring.parked() {
+                let _ = tab.save();
+            }
+            {
+                let mut all_workspaces = vec![workspace.clone()];
+                all_workspaces.extend(ring.parked().iter().map(|t| t.workspace.clone()));
+                save_open_workspaces(&all_workspaces);
+            }
+        }};
+    }
+
     loop {
+        // Apply a pending tab switch before anything borrows the active tab's
+        // locals this iteration (the render context below borrows `tools`).
+        if let Some(action) = pending_tab_action.take() {
+            apply_tab_action!(action);
+        }
+
+        let tab_bar = (ring.total() > 1).then(|| WorkspaceTabsView {
+            count: ring.total(),
+            active: ring.active_pos(),
+            placement: config.workspaces,
+        });
+        // Per-tab colored dots: only computed when feedback is on and multiple
+        // tabs are open. Indexed left-to-right; parked tabs check whether their
+        // recorded branch is still the workspace's live branch.
+        let tab_statuses: Vec<TabStatus> = if config.feedback && ring.total() > 1 {
+            let active_pos = ring.active_pos();
+            (0..ring.total())
+                .map(|pos| {
+                    if pos == active_pos {
+                        TabStatus::Valid
+                    } else {
+                        let others_idx = if pos < active_pos { pos } else { pos - 1 };
+                        parked_tab_status(&ring.parked()[others_idx])
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Pre-compute the variant used during any wait (local command, streaming
+        // or LLM response): the active tab's dot becomes white-blinking.
+        let mut tab_statuses_working = tab_statuses.clone();
+        if let Some(s) = tab_statuses_working.get_mut(ring.active_pos()) {
+            *s = TabStatus::Working;
+        }
         let prompt_branch = workspace_branch_name(tools.workspace());
         let active_profile = config
             .llms
@@ -372,9 +522,10 @@ async fn run() -> Result<()> {
             output_state.push_text(&format!("Switched model from {old_model} to {new_model}"));
             header_status.model_ok = true;
         }
+        let endpoint = current_endpoint.as_deref().unwrap_or("(disconnected)");
         let render = RenderContext {
             current_model: &active_model_id,
-            endpoint: current_endpoint.as_deref().unwrap_or("(disconnected)"),
+            endpoint,
             workspace: tools.workspace(),
             prompt_branch: prompt_branch.as_deref(),
             header_status,
@@ -387,7 +538,117 @@ async fn run() -> Result<()> {
             server_names: &server_names,
             available_models: &available_models,
             skills: &skills,
+            tab_bar,
+            tab_statuses: &tab_statuses,
         };
+
+        // If the active tab has a background streaming task, re-attach to it
+        // so the user sees live output and stats, then continue to the next
+        // loop iteration (which will re-run the normal prompt-read path).
+        if let Some(pr) = pending_response.take() {
+            let pr_llm_start = pr.llm_start;
+            let pr_tool_time_before = pr.tool_time_before;
+            let prompt_profile = config
+                .llms
+                .get(&active_model)
+                .cloned()
+                .ok_or_else(|| anyhow!("missing configured server {}", active_model))?;
+            let mut deferred_tab_during_wait: Option<TabAction> = None;
+            let pr_result = wait_for_pending_response(
+                &mut session,
+                &prompt_profile,
+                pr,
+                WaitContext {
+                    render: RenderContext {
+                        current_model: &active_model_id,
+                        endpoint: current_endpoint.as_deref().unwrap_or("(disconnected)"),
+                        workspace: tools.workspace(),
+                        prompt_branch: prompt_branch.as_deref(),
+                        header_status,
+                        virtual_width: viewport.virtual_width,
+                        actual_width: viewport.actual_width,
+                        actual_height: viewport.actual_height,
+                        x_offset: viewport.x_offset,
+                        banner: config.banner,
+                        feedback: config.feedback,
+                        server_names: &server_names,
+                        available_models: &available_models,
+                        skills: &skills,
+                        tab_bar,
+                        tab_statuses: &tab_statuses_working,
+                    },
+                    history: &mut history,
+                    history_path: &session_hist_path,
+                    server_names: &server_names,
+                    available_models: &available_models,
+                    interrupt_state: &mut interrupt_state,
+                    output_state: &mut output_state,
+                    input_state: &mut input_state,
+                    pending_commands: &mut pending_commands,
+                    thinking_quote: None,
+                    viewport: &mut viewport,
+                    skills: &skills,
+                    deferred_tab: &mut deferred_tab_during_wait,
+                },
+            )
+            .await;
+            match pr_result {
+                Ok(WaitResult::Response(answer)) => {
+                    let tool_delta = tools
+                        .total_tool_duration()
+                        .saturating_sub(pr_tool_time_before);
+                    usage_stats.record_response(pr_llm_start.elapsed(), &answer, tool_delta);
+                    output_state.push_markdown(&answer);
+                    if config.feedback {
+                        output_state.push_text(FEEDBACK_OK);
+                    }
+                }
+                Ok(WaitResult::Cancelled(partial_output)) => {
+                    let tool_delta = tools
+                        .total_tool_duration()
+                        .saturating_sub(pr_tool_time_before);
+                    usage_stats.record_response(
+                        pr_llm_start.elapsed(),
+                        &partial_output,
+                        tool_delta,
+                    );
+                    preserve_cancelled_output(&mut output_state, &partial_output);
+                }
+                Ok(WaitResult::Failed { partial, error }) => {
+                    let tool_delta = tools
+                        .total_tool_duration()
+                        .saturating_sub(pr_tool_time_before);
+                    usage_stats.record_response(pr_llm_start.elapsed(), &partial, tool_delta);
+                    output_state.push_text(&format!("Error: {error:#}"));
+                    if config.feedback {
+                        output_state.push_text(FEEDBACK_ERR);
+                    }
+                }
+                Ok(WaitResult::BackgroundStreaming(new_pr)) => {
+                    pending_response = Some(new_pr);
+                }
+                Ok(WaitResult::Quit) => {
+                    save_all_tabs!();
+                    print!("{CLEAR_TERMINAL_SEQUENCE}");
+                    std::io::stdout().flush()?;
+                    break;
+                }
+                Err(err) => {
+                    let tool_delta = tools
+                        .total_tool_duration()
+                        .saturating_sub(pr_tool_time_before);
+                    usage_stats.record_elapsed(pr_llm_start.elapsed(), tool_delta);
+                    output_state.push_text(&format!("Error: {err:#}"));
+                    if config.feedback {
+                        output_state.push_text(FEEDBACK_ERR);
+                    }
+                }
+            }
+            pending_tab_action = deferred_tab_during_wait;
+            output_state.reset_scroll();
+            continue;
+        }
+
         // Collect the startup branch-sync result once its task finishes.
         if sync_handle
             .as_ref()
@@ -509,9 +770,24 @@ async fn run() -> Result<()> {
                     trimmed
                 }
                 InputResult::Refresh => continue,
+                InputResult::WorkspacePrevious => {
+                    pending_tab_action = Some(TabAction::Previous);
+                    continue;
+                }
+                InputResult::WorkspaceNext => {
+                    pending_tab_action = Some(TabAction::Next);
+                    continue;
+                }
+                InputResult::WorkspaceNew => {
+                    pending_tab_action = Some(TabAction::New);
+                    continue;
+                }
+                InputResult::WorkspaceClose => {
+                    pending_tab_action = Some(TabAction::Close);
+                    continue;
+                }
                 InputResult::Quit => {
-                    save_session_messages(&session_messages_path, session.messages())?;
-                    update_session_metadata_timestamp(&session_metadata_path)?;
+                    save_all_tabs!();
                     print!("{CLEAR_TERMINAL_SEQUENCE}");
                     std::io::stdout().flush()?;
                     break;
@@ -585,23 +861,20 @@ async fn run() -> Result<()> {
         }
         match command_outcome {
             CommandOutcome::Quit => {
-                save_session_messages(&session_messages_path, session.messages())?;
-                update_session_metadata_timestamp(&session_metadata_path)?;
+                save_all_tabs!();
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
                 break;
             }
             CommandOutcome::Restart => {
-                save_session_messages(&session_messages_path, session.messages())?;
-                update_session_metadata_timestamp(&session_metadata_path)?;
+                save_all_tabs!();
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
                 restart_requested = true;
                 break;
             }
             CommandOutcome::SwitchSession(target) => {
-                save_session_messages(&session_messages_path, session.messages())?;
-                update_session_metadata_timestamp(&session_metadata_path)?;
+                save_all_tabs!();
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
                 restart_requested = true;
@@ -609,13 +882,20 @@ async fn run() -> Result<()> {
                 break;
             }
             CommandOutcome::SwitchWorkspace(dir) => {
-                save_session_messages(&session_messages_path, session.messages())?;
-                update_session_metadata_timestamp(&session_metadata_path)?;
+                save_all_tabs!();
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
                 restart_requested = true;
                 workspace_override = Some(dir);
                 break;
+            }
+            CommandOutcome::SwitchWorkspaceTab(index) => {
+                pending_tab_action = Some(TabAction::SwitchTo(index));
+                continue;
+            }
+            CommandOutcome::OpenWorkspaceTab(dir) => {
+                pending_tab_action = Some(TabAction::Open(dir));
+                continue;
             }
             CommandOutcome::Quiet => {
                 if config.feedback {
@@ -677,7 +957,10 @@ async fn run() -> Result<()> {
                     server_names: &server_names,
                     available_models: &available_models,
                     skills: &skills,
+                    tab_bar,
+                    tab_statuses: &tab_statuses_working,
                 };
+                let mut deferred_tab_during_wait: Option<TabAction> = None;
                 let result = wait_for_local_command(
                     WaitContext {
                         render: blocking_render,
@@ -692,6 +975,7 @@ async fn run() -> Result<()> {
                         thinking_quote: None,
                         viewport: &mut viewport,
                         skills: &skills,
+                        deferred_tab: &mut deferred_tab_during_wait,
                     },
                     handle,
                 )
@@ -710,6 +994,7 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
+                pending_tab_action = deferred_tab_during_wait;
                 output_state.reset_scroll();
                 continue;
             }
@@ -732,7 +1017,10 @@ async fn run() -> Result<()> {
                     server_names: &server_names,
                     available_models: &available_models,
                     skills: &skills,
+                    tab_bar,
+                    tab_statuses: &tab_statuses_working,
                 };
+                let mut deferred_tab_during_wait: Option<TabAction> = None;
                 let result = wait_for_streaming_command(
                     WaitContext {
                         render: blocking_render,
@@ -747,6 +1035,7 @@ async fn run() -> Result<()> {
                         thinking_quote: None,
                         viewport: &mut viewport,
                         skills: &skills,
+                        deferred_tab: &mut deferred_tab_during_wait,
                     },
                     handle,
                     &mut rx,
@@ -765,6 +1054,7 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
+                pending_tab_action = deferred_tab_during_wait;
                 output_state.reset_scroll();
                 continue;
             }
@@ -960,6 +1250,7 @@ async fn run() -> Result<()> {
                 }
                 // The modal view overwrote the screen; the next loop iteration
                 // redraws the normal interface from the top.
+                pending_tab_action = state.pending_tab;
                 output_state.reset_scroll();
                 continue;
             }
@@ -1060,11 +1351,14 @@ async fn run() -> Result<()> {
             .unwrap_or_default()
             .as_secs();
         let thinking_quote = quote_module.pick(seed);
+        let mut deferred_tab_during_wait: Option<TabAction> = None;
         match wait_for_response(
             &mut session,
             &prompt_input,
             &prompt_profile,
             &tools,
+            llm_start,
+            tool_time_before,
             WaitContext {
                 render: RenderContext {
                     current_model: &active_model_id,
@@ -1081,6 +1375,8 @@ async fn run() -> Result<()> {
                     server_names: &server_names,
                     available_models: &available_models,
                     skills: &skills,
+                    tab_bar,
+                    tab_statuses: &tab_statuses_working,
                 },
                 history: &mut history,
                 history_path: &session_hist_path,
@@ -1093,6 +1389,7 @@ async fn run() -> Result<()> {
                 thinking_quote,
                 viewport: &mut viewport,
                 skills: &skills,
+                deferred_tab: &mut deferred_tab_during_wait,
             },
         )
         .await
@@ -1119,11 +1416,13 @@ async fn run() -> Result<()> {
                 }
             }
             Ok(WaitResult::Quit) => {
-                save_session_messages(&session_messages_path, session.messages())?;
-                update_session_metadata_timestamp(&session_metadata_path)?;
+                save_all_tabs!();
                 print!("{CLEAR_TERMINAL_SEQUENCE}");
                 std::io::stdout().flush()?;
                 break;
+            }
+            Ok(WaitResult::BackgroundStreaming(pr)) => {
+                pending_response = Some(pr);
             }
             Err(err) => {
                 let tool_delta = tools.total_tool_duration().saturating_sub(tool_time_before);
@@ -1134,6 +1433,7 @@ async fn run() -> Result<()> {
                 }
             }
         }
+        pending_tab_action = deferred_tab_during_wait;
         output_state.reset_scroll();
     }
 
@@ -1186,13 +1486,32 @@ async fn run() -> Result<()> {
         }
     }
 
-    if usage_stats.total_tokens == 0 && is_ephemeral_branch(current_branch.as_deref().unwrap_or(""))
-    {
-        delete_session_dir(&session_dir);
-    } else {
-        eprintln!("orangu --resume {session_id}");
+    // Finish every open tab: print one resume line per tab (with its workspace
+    // and branch), or clean up its session if it was ephemeral.
+    let active_tab = current_tab!();
+    active_tab.finish();
+    for tab in ring.parked() {
+        tab.finish();
     }
     Ok(())
+}
+
+/// Determine the feedback-dot status of a parked (non-active) workspace tab.
+/// Checks whether the tab's recorded branch is still the workspace's live
+/// branch; a mismatch signals that the branch was deleted or merged.
+fn parked_tab_status(tab: &WorkspaceTab) -> TabStatus {
+    if tab.pending_response.is_some() {
+        return TabStatus::Working;
+    }
+    if !tab.workspace.is_dir() {
+        return TabStatus::BranchGone;
+    }
+    if let Some(recorded) = &tab.current_branch
+        && workspace_branch_name(&tab.workspace).as_deref() != Some(recorded.as_str())
+    {
+        return TabStatus::BranchGone;
+    }
+    TabStatus::Valid
 }
 
 fn llm_prompt_block_reason(

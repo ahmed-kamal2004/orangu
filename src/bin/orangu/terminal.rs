@@ -118,6 +118,8 @@ pub fn print_screen(render: RenderContext<'_>, screen: ScreenState<'_>) {
             prompt_branch: render.prompt_branch,
             status: render.header_status,
             banner: render.banner,
+            tab_bar: render.tab_bar,
+            tab_statuses: render.tab_statuses,
             transcript: screen.transcript,
             scroll_offset: screen.scroll_offset,
             left_status: screen.left_status,

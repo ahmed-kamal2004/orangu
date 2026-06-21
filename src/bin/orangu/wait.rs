@@ -25,8 +25,99 @@ pub(crate) async fn wait_for_response(
     user_input: &str,
     profile: &LlmConfiguration,
     tools: &ToolExecutor,
+    llm_start: std::time::Instant,
+    tool_time_before: std::time::Duration,
     wait_context: WaitContext<'_>,
 ) -> Result<WaitResult> {
+    // Snapshot messages so we can restore a clean session on ESC-cancel.
+    let saved_messages = session.messages().to_vec();
+
+    // Move `session` into the background task so the future can outlive this
+    // stack frame if the user switches tabs mid-stream.
+    let real_session = std::mem::replace(session, ChatSession::new(""));
+    let user_input_owned = user_input.to_string();
+    let profile_owned = profile.clone();
+    let tools_clone = tools.clone();
+    let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
+    let so = Arc::clone(&streamed_state);
+    let sm = Arc::clone(&streamed_state);
+    let st = Arc::clone(&streamed_state);
+
+    let handle = tokio::spawn(async move {
+        let mut s = real_session;
+        let result = s
+            .prompt(
+                &user_input_owned,
+                &profile_owned,
+                &tools_clone,
+                move |delta| {
+                    if let Ok(mut state) = so.lock() {
+                        state.output.push_str(delta);
+                    }
+                },
+                move |metrics| {
+                    if let Ok(mut state) = sm.lock() {
+                        state.metrics.merge(metrics);
+                    }
+                },
+                move |running| {
+                    if let Ok(mut state) = st.lock() {
+                        state.tool_running_since = if running {
+                            Some(std::time::Instant::now())
+                        } else {
+                            None
+                        };
+                    }
+                },
+            )
+            .await;
+        (s, result)
+    });
+
+    drive_handle(
+        session,
+        PendingResponse {
+            stream_state: streamed_state,
+            handle,
+            llm_start,
+            tool_time_before,
+            saved_messages,
+        },
+        profile,
+        wait_context,
+    )
+    .await
+}
+
+/// Re-attach to an LLM response that was running in the background while the
+/// user was on another tab. Behaves like [`wait_for_response`] but reuses the
+/// already-running task instead of starting a new one.
+pub(crate) async fn wait_for_pending_response(
+    session: &mut ChatSession,
+    profile: &LlmConfiguration,
+    pr: PendingResponse,
+    wait_context: WaitContext<'_>,
+) -> Result<WaitResult> {
+    drive_handle(session, pr, profile, wait_context).await
+}
+
+/// The shared polling loop used by both [`wait_for_response`] and
+/// [`wait_for_pending_response`]. Takes ownership of `pr` so the handle and
+/// streamed state can be moved into a [`WaitResult::BackgroundStreaming`]
+/// payload on a tab-switch without cloning.
+async fn drive_handle(
+    session: &mut ChatSession,
+    pr: PendingResponse,
+    profile: &LlmConfiguration,
+    wait_context: WaitContext<'_>,
+) -> Result<WaitResult> {
+    let PendingResponse {
+        stream_state: streamed_state,
+        handle,
+        llm_start,
+        tool_time_before,
+        saved_messages,
+    } = pr;
     let WaitContext {
         mut render,
         history,
@@ -40,36 +131,11 @@ pub(crate) async fn wait_for_response(
         thinking_quote,
         viewport,
         skills,
+        deferred_tab,
     } = wait_context;
-    let streamed_state = Arc::new(Mutex::new(StreamRenderState::default()));
-    let prompt_output = Arc::clone(&streamed_state);
-    let prompt_metrics = Arc::clone(&streamed_state);
-    let prompt_tool_running = Arc::clone(&streamed_state);
+
+    let mut handle = handle;
     let tokenizer = cl100k_base().ok();
-    let mut prompt_future = Box::pin(session.prompt(
-        user_input,
-        profile,
-        tools,
-        move |delta| {
-            if let Ok(mut state) = prompt_output.lock() {
-                state.output.push_str(delta);
-            }
-        },
-        move |metrics| {
-            if let Ok(mut state) = prompt_metrics.lock() {
-                state.metrics.merge(metrics);
-            }
-        },
-        move |running| {
-            if let Ok(mut state) = prompt_tool_running.lock() {
-                state.tool_running_since = if running {
-                    Some(std::time::Instant::now())
-                } else {
-                    None
-                };
-            }
-        },
-    ));
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
     let mut thinking_frame = 0usize;
     let thinking_started = std::time::Instant::now();
@@ -100,9 +166,10 @@ pub(crate) async fn wait_for_response(
 
     loop {
         tokio::select! {
-            result = &mut prompt_future => {
-                let response = match result {
-                    Ok(response) => response,
+            task_result = &mut handle => {
+                let (real_session_back, llm_result) = task_result?;
+                *session = real_session_back;
+                match llm_result {
                     Err(error) => {
                         let partial = streamed_state
                             .lock()
@@ -110,30 +177,33 @@ pub(crate) async fn wait_for_response(
                             .unwrap_or_default();
                         return Ok(WaitResult::Failed { partial, error });
                     }
-                };
-                let final_state = streamed_state
-                    .lock()
-                    .map(|state| state.clone())
-                    .unwrap_or_default();
-                if let Some(pending_line) = final_pending_line(&final_state.output, &response)
-                    .map(|line| render_markdown_for_console(&line))
-                {
-                    print_screen(
-                        render,
-                        ScreenState {
-                            transcript: output_state.lines(),
-                            scroll_offset: output_state.scroll_offset(),
-                            left_status: None,
-                            pending_count: pending_commands.len(),
-                            pending_line: Some(pending_line.as_str()),
-                            input: input_state.as_str(),
-                            cursor: input_state.cursor(),
-            ghost_index: input_state.ghost_index,
-                        },
-                    );
-                    std::io::stdout().flush()?;
+                    Ok(response) => {
+                        let final_state = streamed_state
+                            .lock()
+                            .map(|state| state.clone())
+                            .unwrap_or_default();
+                        if let Some(pending_line) =
+                            final_pending_line(&final_state.output, &response)
+                                .map(|line| render_markdown_for_console(&line))
+                        {
+                            print_screen(
+                                render,
+                                ScreenState {
+                                    transcript: output_state.lines(),
+                                    scroll_offset: output_state.scroll_offset(),
+                                    left_status: None,
+                                    pending_count: pending_commands.len(),
+                                    pending_line: Some(pending_line.as_str()),
+                                    input: input_state.as_str(),
+                                    cursor: input_state.cursor(),
+                                    ghost_index: input_state.ghost_index,
+                                },
+                            );
+                            std::io::stdout().flush()?;
+                        }
+                        return Ok(WaitResult::Response(response));
+                    }
                 }
-                return Ok(WaitResult::Response(response));
             }
             _ = interval.tick() => {
                 let elapsed = thinking_started.elapsed();
@@ -159,7 +229,10 @@ pub(crate) async fn wait_for_response(
                                 .lock()
                                 .map(|state| state.output.clone())
                                 .unwrap_or_default();
-                            drop(prompt_future);
+                            handle.abort();
+                            let mut restored = ChatSession::new("");
+                            restored.restore(saved_messages);
+                            *session = restored;
                             return Ok(WaitResult::Cancelled(partial_output));
                         }
                         continue;
@@ -224,6 +297,26 @@ pub(crate) async fn wait_for_response(
                             }
                             InputResult::Refresh => {}
                             InputResult::Quit => return Ok(WaitResult::Quit),
+                            // Park the stream in a background task and switch tabs;
+                            // the LLM keeps running while the user works elsewhere.
+                            outcome @ (InputResult::WorkspacePrevious
+                            | InputResult::WorkspaceNext
+                            | InputResult::WorkspaceNew
+                            | InputResult::WorkspaceClose) => {
+                                *deferred_tab = Some(match outcome {
+                                    InputResult::WorkspacePrevious => crate::workspace_tab::TabAction::Previous,
+                                    InputResult::WorkspaceNext => crate::workspace_tab::TabAction::Next,
+                                    InputResult::WorkspaceNew => crate::workspace_tab::TabAction::New,
+                                    _ => crate::workspace_tab::TabAction::Close,
+                                });
+                                return Ok(WaitResult::BackgroundStreaming(PendingResponse {
+                                    stream_state: streamed_state,
+                                    handle,
+                                    llm_start,
+                                    tool_time_before,
+                                    saved_messages,
+                                }));
+                            }
                         }
                     }
                     redraw |= result.redraw;
@@ -257,7 +350,7 @@ pub(crate) async fn wait_for_response(
                             pending_line: Some(pending_line.as_str()),
                             input: input_state.as_str(),
                             cursor: input_state.cursor(),
-            ghost_index: input_state.ghost_index,
+                            ghost_index: input_state.ghost_index,
                         },
                     );
                     std::io::stdout().flush()?;
@@ -284,6 +377,7 @@ pub(crate) async fn wait_for_local_command(
         thinking_quote: _,
         viewport,
         skills,
+        deferred_tab,
     } = wait_context;
     let started = std::time::Instant::now();
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
@@ -300,7 +394,7 @@ pub(crate) async fn wait_for_local_command(
                     frame = next_frame;
                 }
                 while event::poll(std::time::Duration::ZERO)? {
-                    handle_input_event(
+                    let result = handle_input_event(
                         event::read()?,
                         input_state,
                         interrupt_state,
@@ -315,6 +409,20 @@ pub(crate) async fn wait_for_local_command(
                             skills,
                         },
                     );
+                    if let Some(
+                        outcome @ (InputResult::WorkspacePrevious
+                        | InputResult::WorkspaceNext
+                        | InputResult::WorkspaceNew
+                        | InputResult::WorkspaceClose),
+                    ) = result.outcome
+                    {
+                        *deferred_tab = Some(match outcome {
+                            InputResult::WorkspacePrevious => crate::workspace_tab::TabAction::Previous,
+                            InputResult::WorkspaceNext => crate::workspace_tab::TabAction::Next,
+                            InputResult::WorkspaceNew => crate::workspace_tab::TabAction::New,
+                            _ => crate::workspace_tab::TabAction::Close,
+                        });
+                    }
                     render.actual_width = viewport.actual_width;
                     render.actual_height = viewport.actual_height;
                     render.x_offset = viewport.x_offset;
@@ -359,6 +467,7 @@ pub(crate) async fn wait_for_streaming_command(
         thinking_quote: _,
         viewport,
         skills,
+        deferred_tab,
     } = wait_context;
     let started = std::time::Instant::now();
     let mut interval = tokio::time::interval(WAIT_LOOP_POLL_INTERVAL);
@@ -382,7 +491,7 @@ pub(crate) async fn wait_for_streaming_command(
                     output_state.push_text(&line);
                 }
                 while event::poll(std::time::Duration::ZERO)? {
-                    handle_input_event(
+                    let result = handle_input_event(
                         event::read()?,
                         input_state,
                         interrupt_state,
@@ -397,6 +506,20 @@ pub(crate) async fn wait_for_streaming_command(
                             skills,
                         },
                     );
+                    if let Some(
+                        outcome @ (InputResult::WorkspacePrevious
+                        | InputResult::WorkspaceNext
+                        | InputResult::WorkspaceNew
+                        | InputResult::WorkspaceClose),
+                    ) = result.outcome
+                    {
+                        *deferred_tab = Some(match outcome {
+                            InputResult::WorkspacePrevious => crate::workspace_tab::TabAction::Previous,
+                            InputResult::WorkspaceNext => crate::workspace_tab::TabAction::Next,
+                            InputResult::WorkspaceNew => crate::workspace_tab::TabAction::New,
+                            _ => crate::workspace_tab::TabAction::Close,
+                        });
+                    }
                     render.actual_width = viewport.actual_width;
                     render.actual_height = viewport.actual_height;
                     render.x_offset = viewport.x_offset;

@@ -134,6 +134,12 @@ pub enum CommandOutcome {
     /// Re-exec into a different workspace directory, starting (or auto-resuming)
     /// a session there.
     SwitchWorkspace(PathBuf),
+    /// Switch to the open workspace tab at the given full-order index
+    /// (`/workspace <number>`).
+    SwitchWorkspaceTab(usize),
+    /// Open a directory as a workspace tab, or switch to it if already open
+    /// (`/workspace <path>`).
+    OpenWorkspaceTab(PathBuf),
     Blocking(Box<dyn FnOnce() -> anyhow::Result<String> + Send + 'static>),
     /// A long-running command that streams its output line by line through the
     /// sink as it is produced, rather than returning it all at once.

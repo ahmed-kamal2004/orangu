@@ -438,6 +438,9 @@ pub(crate) struct AutoReviewState {
     pub(crate) reject: Option<AutoReviewReject>,
     /// The model performing the review, shown after the `Conclusion` verdict.
     pub(crate) model: String,
+    /// A workspace-switch key pressed during streaming; applied by `main` after
+    /// the auto review mode exits.
+    pub(crate) pending_tab: Option<crate::workspace_tab::TabAction>,
 }
 
 impl AutoReviewState {
@@ -461,6 +464,7 @@ impl AutoReviewState {
             cancelled: false,
             reject: None,
             model: String::new(),
+            pending_tab: None,
         }
     }
 
@@ -1615,6 +1619,10 @@ pub(crate) async fn run_auto_review_mode(
                     exit_requested = true;
                     break 'auto;
                 }
+                AutoReviewRequestOutcome::SwitchTab(tab) => {
+                    state.pending_tab = Some(tab);
+                    break 'auto;
+                }
             }
         }
         // Mark the file: red when any category rejected, white when a request
@@ -1664,6 +1672,9 @@ pub(crate) async fn run_auto_review_mode(
             }
             AutoReviewRequestOutcome::Cancelled => state.cancel(),
             AutoReviewRequestOutcome::Exit => exit_requested = true,
+            AutoReviewRequestOutcome::SwitchTab(tab) => {
+                state.pending_tab = Some(tab);
+            }
         }
     }
     // When feedback is on, announce a completed run with the standard terminal
@@ -1806,6 +1817,9 @@ pub(crate) enum AutoReviewRequestOutcome {
     Cancelled,
     /// The user pressed Alt+x — leave auto review mode entirely.
     Exit,
+    /// The user pressed a workspace-switch key (Alt+,/./Insert/Delete) —
+    /// cancel the current request and leave auto review to perform the switch.
+    SwitchTab(crate::workspace_tab::TabAction),
 }
 
 /// Drive one auto review request, rendering the screen with a live status
@@ -1885,6 +1899,30 @@ pub(crate) async fn run_auto_review_request(
                         (KeyCode::Char('x'), true) => {
                             drop(future);
                             return Ok(AutoReviewRequestOutcome::Exit);
+                        }
+                        (KeyCode::Char(','), true) => {
+                            drop(future);
+                            return Ok(AutoReviewRequestOutcome::SwitchTab(
+                                crate::workspace_tab::TabAction::Previous,
+                            ));
+                        }
+                        (KeyCode::Char('.'), true) => {
+                            drop(future);
+                            return Ok(AutoReviewRequestOutcome::SwitchTab(
+                                crate::workspace_tab::TabAction::Next,
+                            ));
+                        }
+                        (KeyCode::Insert, true) => {
+                            drop(future);
+                            return Ok(AutoReviewRequestOutcome::SwitchTab(
+                                crate::workspace_tab::TabAction::New,
+                            ));
+                        }
+                        (KeyCode::Delete, true) => {
+                            drop(future);
+                            return Ok(AutoReviewRequestOutcome::SwitchTab(
+                                crate::workspace_tab::TabAction::Close,
+                            ));
                         }
                         (KeyCode::Up, _) => state.scroll = state.scroll.saturating_sub(1),
                         (KeyCode::Down, _) => state.scroll = state.scroll.saturating_add(1),

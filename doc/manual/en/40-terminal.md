@@ -19,6 +19,7 @@ The sync runs in the background so it never delays startup. Its progress and res
 | `-c`  | `--config`    | Path to the configuration file (`orangu.conf`).               |
 | `-w`  | `--workspace` | Workspace root the local tools operate on. Defaults to `.`.   |
 | `-r`  | `--resume`    | Resume a specific session by UUID.                            |
+| `-a`  | `--all`       | Reopen the workspace tabs that were open at the end of the last run. |
 
 ## Header
 

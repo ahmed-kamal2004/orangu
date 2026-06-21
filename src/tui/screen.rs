@@ -14,8 +14,31 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use super::*;
+use crate::workspaces::WorkspacePlacement;
 use std::time::Duration;
 use terminal_size::{Height, Width, terminal_size};
+
+/// The workspace tab bar to draw: how many tabs are open, which is active
+/// (0-based, left to right) and where the bar sits relative to the screen.
+#[derive(Clone, Copy)]
+pub struct WorkspaceTabsView {
+    pub count: usize,
+    pub active: usize,
+    pub placement: WorkspacePlacement,
+}
+
+/// Status of a single open workspace tab, shown as a colored dot in the tab
+/// bar when the `feedback` configuration key is on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TabStatus {
+    /// The workspace directory and branch are valid (green ●).
+    Valid,
+    /// The live branch no longer matches the one the tab was opened on —
+    /// probably deleted or merged (red ●).
+    BranchGone,
+    /// The active tab is currently streaming a response (blinking white ●).
+    Working,
+}
 
 pub(crate) const USER_INPUT_BACKGROUND: &str = "\x1b[48;2;44;44;44m";
 const GHOST_TEXT: &str = "\x1b[38;2;120;120;120m";
@@ -31,6 +54,10 @@ pub struct ScreenRenderArgs<'a> {
     pub prompt_branch: Option<&'a str>,
     pub status: HeaderStatus,
     pub banner: Banner,
+    pub tab_bar: Option<WorkspaceTabsView>,
+    /// Per-tab status dots for the tab bar, in left-to-right order. Empty when
+    /// `feedback` is off; when non-empty has exactly `tab_bar.count` entries.
+    pub tab_statuses: &'a [TabStatus],
     pub transcript: &'a [TranscriptLine],
     pub scroll_offset: usize,
     pub left_status: Option<StatusFragment>,
@@ -60,7 +87,94 @@ pub struct PromptFrameArgs<'a> {
     pub actual_width: usize,
 }
 
+fn tab_dot(status: TabStatus) -> &'static str {
+    match status {
+        TabStatus::Valid => "\x1b[38;2;80;200;120m●\x1b[0m",
+        TabStatus::BranchGone => "\x1b[38;2;220;80;80m●\x1b[0m",
+        TabStatus::Working => "\x1b[5;38;2;230;230;230m●\x1b[0m",
+    }
+}
+
+/// The horizontal workspace tab bar (`1 │ 2 │ 3`, active tab bold) for top and
+/// bottom placement, clipped to `width`. When `statuses` is non-empty a
+/// colored dot precedes each tab number.
+fn horizontal_tab_bar(view: WorkspaceTabsView, width: usize, statuses: &[TabStatus]) -> String {
+    let cells: Vec<String> = (0..view.count)
+        .map(|index| {
+            let number = index + 1;
+            let dot = statuses.get(index).copied().map(tab_dot).unwrap_or("");
+            if index == view.active {
+                format!("{dot}\x1b[1m{number}\x1b[0m")
+            } else {
+                format!("{dot}{GHOST_TEXT}{number}{ANSI_RESET}")
+            }
+        })
+        .collect();
+    clip_line(&cells.join(" │ "), 0, width)
+}
+
+/// Width of the vertical tab gutter: the widest tab number plus ` │ `, and one
+/// extra column when status dots are shown.
+fn tab_gutter_width(view: WorkspaceTabsView, has_dots: bool) -> usize {
+    view.count.to_string().len() + 3 + usize::from(has_dots)
+}
+
+/// The gutter cell for screen `row` on a left/right placement: the tab number
+/// (bold when active) on the first `count` rows, blank after, always carrying
+/// the separator bar — `N │ ` on the left, ` │ N` on the right. When
+/// `statuses` is non-empty, a colored dot precedes each tab number.
+fn tab_gutter_cell(
+    view: WorkspaceTabsView,
+    row: usize,
+    left: bool,
+    statuses: &[TabStatus],
+) -> String {
+    let digits = view.count.to_string().len();
+    let dot = if statuses.is_empty() {
+        String::new()
+    } else if let Some(&status) = statuses.get(row) {
+        tab_dot(status).to_string()
+    } else {
+        " ".to_string()
+    };
+    let label = if row < view.count {
+        let number = row + 1;
+        if row == view.active {
+            format!("\x1b[1m{number:>digits$}\x1b[0m")
+        } else {
+            format!("{GHOST_TEXT}{number:>digits$}{ANSI_RESET}")
+        }
+    } else {
+        " ".repeat(digits)
+    };
+    if left {
+        format!("{dot}{label} │ ")
+    } else {
+        format!(" │ {dot}{label}")
+    }
+}
+
 pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
+    let width = args.virtual_width.max(1);
+    let actual_width = args.actual_width.max(1);
+    let actual_height = args.actual_height.max(1);
+
+    // Where the workspace tab bar sits. Top/bottom take a row of the screen;
+    // left/right take a gutter column from the banner and output region.
+    let placement = args.tab_bar.map(|view| view.placement);
+    let top_row = usize::from(placement == Some(WorkspacePlacement::Top));
+    let bottom_row = usize::from(placement == Some(WorkspacePlacement::Bottom));
+    let left = placement == Some(WorkspacePlacement::Left);
+    let right = placement == Some(WorkspacePlacement::Right);
+    let has_dots = !args.tab_statuses.is_empty();
+    let gutter = match args.tab_bar {
+        Some(view) if left || right => tab_gutter_width(view, has_dots),
+        _ => 0,
+    };
+    let inner_width = actual_width.saturating_sub(gutter).max(1);
+    // The prompt frame keeps the full width; a bottom bar shrinks its height.
+    let frame_height = actual_height.saturating_sub(bottom_row).max(1);
+
     let header = render_header(
         args.version,
         args.current_model,
@@ -68,32 +182,31 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
         args.workspace,
         args.status,
         args.banner,
-        args.actual_width,
+        inner_width,
     );
     let header_line_count = header.lines().count();
-    let width = args.virtual_width.max(1);
-    let actual_width = args.actual_width.max(1);
-    let actual_height = args.actual_height.max(1);
     let prompt_prefix = prompt_prefix(args.prompt_branch);
     let input_lines = wrapped_input_lines(args.input, actual_width, &prompt_prefix);
     let prompt_frame_height = input_lines.len() + 3;
 
     // Priority: prompt frame first, then banner, then output.
-    let rows_above_prompt = actual_height.saturating_sub(prompt_frame_height);
+    let rows_above_prompt = frame_height.saturating_sub(prompt_frame_height);
     // Banner = header lines + 1 blank separator line; truncate to what fits.
     let full_banner_height = header_line_count + 1;
     let banner_rows = full_banner_height.min(rows_above_prompt);
-    let available_output_rows = available_output_rows(rows_above_prompt, banner_rows);
+    // A top bar takes one row from the output area.
+    let available_output_rows =
+        available_output_rows(rows_above_prompt, banner_rows).saturating_sub(top_row);
 
     let mut output_lines = args
         .transcript
         .iter()
         .map(|line| {
             let (rendered, offset) = match line {
-                TranscriptLine::UserInput(_) => (render_transcript_line(line, actual_width), 0),
+                TranscriptLine::UserInput(_) => (render_transcript_line(line, inner_width), 0),
                 _ => (render_transcript_line(line, width), args.x_offset),
             };
-            clip_line(&rendered, offset, actual_width)
+            clip_line(&rendered, offset, inner_width)
         })
         .collect::<Vec<_>>();
     if let Some(pending_line) = args.pending_line {
@@ -103,7 +216,7 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
             output_lines.extend(
                 pending_line
                     .lines()
-                    .map(|l| clip_line(l, args.x_offset, actual_width)),
+                    .map(|l| clip_line(l, args.x_offset, inner_width)),
             );
         }
     }
@@ -113,28 +226,63 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
     let visible_start = visible_end.saturating_sub(available_output_rows);
     let visible_lines = &output_lines[visible_start..visible_end];
 
-    let mut screen = String::new();
-
-    // Banner — show as many header lines as fit; add blank separator only when full banner fits.
+    // The banner and output region, as rows at `inner_width`.
+    let mut upper: Vec<String> = Vec::new();
     if banner_rows > 0 {
         let shown_header_lines = banner_rows.min(header_line_count);
-        let banner_content = header
-            .split("\r\n")
-            .take(shown_header_lines)
-            .map(|l| clip_line(l, 0, actual_width))
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        screen.push_str(&banner_content);
-        screen.push_str("\r\n");
+        for line in header.split("\r\n").take(shown_header_lines) {
+            upper.push(clip_line(line, 0, inner_width));
+        }
         if banner_rows > header_line_count {
-            screen.push_str("\r\n"); // blank separator line
+            upper.push(String::new());
         }
     }
+    upper.extend(visible_lines.iter().cloned());
 
-    if !visible_lines.is_empty() {
-        screen.push_str(&visible_lines.join("\r\n"));
+    let mut screen = String::new();
+
+    // Pre-compute the horizontal bar string once; used by at most one of the
+    // top/bottom branches (they are mutually exclusive), but computing upfront
+    // avoids repeating the Vec+join allocation if this function is ever called
+    // in a context where placement could be re-evaluated.
+    let h_tab_bar: Option<String> = if top_row == 1 || bottom_row == 1 {
+        args.tab_bar
+            .map(|view| horizontal_tab_bar(view, actual_width, args.tab_statuses))
+    } else {
+        None
+    };
+
+    // Top tab bar.
+    if top_row == 1
+        && let Some(ref bar) = h_tab_bar
+    {
+        screen.push_str(bar);
         screen.push_str("\r\n");
     }
+
+    // Banner and output, with a left/right gutter when placed vertically.
+    if let (true, Some(view)) = (left || right, args.tab_bar) {
+        for row in 0..rows_above_prompt {
+            let content = upper.get(row).cloned().unwrap_or_default();
+            let cell = tab_gutter_cell(view, row, left, args.tab_statuses);
+            if left {
+                screen.push_str(&cell);
+                screen.push_str(&content);
+            } else {
+                let pad = inner_width.saturating_sub(visible_line_width(&content));
+                screen.push_str(&content);
+                for _ in 0..pad {
+                    screen.push(' ');
+                }
+                screen.push_str(&cell);
+            }
+            screen.push_str("\r\n");
+        }
+    } else if !upper.is_empty() {
+        screen.push_str(&upper.join("\r\n"));
+        screen.push_str("\r\n");
+    }
+
     screen.push_str(&render_prompt_frame(PromptFrameArgs {
         header_height: banner_rows,
         current_model: args.current_model,
@@ -144,9 +292,29 @@ pub fn render_screen(args: ScreenRenderArgs<'_>) -> String {
         input: args.input,
         cursor: args.cursor,
         ghost: args.ghost,
-        height: actual_height,
+        height: frame_height,
         actual_width,
     }));
+
+    // Bottom tab bar on the last terminal row.
+    if bottom_row == 1
+        && let Some(ref bar) = h_tab_bar
+    {
+        screen.push_str(&format!("\x1b[{actual_height};1H{bar}"));
+        // Writing the bar moved the cursor to the last row; put it back in the
+        // input area so keystrokes land in the right place.
+        let input_height = input_lines.len();
+        let pf_height = frame_height.max(banner_rows + input_height + 3);
+        let pf_top_row = (pf_height.saturating_sub(input_height + 2)).max(banner_rows + 1);
+        let pf_input_start = pf_top_row + 1;
+        let pf_prompt_width = prompt_prefix.chars().count();
+        let (cr_offset, cc_offset) =
+            cursor_position(args.input, args.cursor, actual_width, &prompt_prefix);
+        let cr = pf_input_start + cr_offset;
+        let cc = (1 + pf_prompt_width + cc_offset).max(1);
+        screen.push_str(&format!("\x1b[{cr};{cc}H"));
+    }
+
     screen
 }
 

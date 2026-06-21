@@ -60,6 +60,9 @@ pub(crate) fn test_input_context<'a>(workspace: &'a std::path::Path) -> InputCon
             available_models: &[],
             skills: SKILLS
                 .get_or_init(|| orangu::skills::SkillRegistry::discover(std::path::Path::new("/"))),
+            // Tests run with a single workspace; no tab bar or status dots needed.
+            tab_bar: None,
+            tab_statuses: &[],
         },
         skills: SKILLS
             .get_or_init(|| orangu::skills::SkillRegistry::discover(std::path::Path::new("/"))),

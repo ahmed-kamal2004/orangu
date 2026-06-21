@@ -39,6 +39,122 @@ pub(crate) fn clear_restart_dir() {
     }
 }
 
+/// File recording the workspace directories open in the last run, one per line.
+/// Written on exit and read by `orangu -a|--all` to reopen those tabs.
+pub(crate) const OPEN_WORKSPACES_FILE: &str = ".orangu/workspaces";
+
+fn open_workspaces_path() -> Option<PathBuf> {
+    Some(home::home_dir()?.join(OPEN_WORKSPACES_FILE))
+}
+
+/// Record the open workspace directories, one per line, so `orangu -a` can
+/// reopen them next time. Errors are ignored: failing to save the layout must
+/// never block exit.
+pub(crate) fn save_open_workspaces(workspaces: &[PathBuf]) {
+    let Some(path) = open_workspaces_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, format_workspace_paths(workspaces));
+}
+
+fn format_workspace_paths(workspaces: &[PathBuf]) -> String {
+    use std::fmt::Write as FmtWrite;
+    let mut body = String::new();
+    for (i, workspace) in workspaces.iter().enumerate() {
+        if i > 0 {
+            body.push('\n');
+        }
+        write!(body, "{}", workspace.display()).ok();
+    }
+    body
+}
+
+/// The workspace directories saved by the last run that still exist, in order.
+/// Read by `orangu -a|--all`; missing directories are skipped so a deleted
+/// project does not get recreated on restore.
+pub(crate) fn load_open_workspaces() -> Vec<PathBuf> {
+    let Some(path) = open_workspaces_path() else {
+        return Vec::new();
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    parse_workspace_paths(&contents)
+        .into_iter()
+        .filter(|workspace| workspace.is_dir())
+        .collect()
+}
+
+fn parse_workspace_paths(contents: &str) -> Vec<PathBuf> {
+    contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_workspace_paths_joins_with_newlines() {
+        let paths = vec![
+            PathBuf::from("/home/user/project"),
+            PathBuf::from("/home/user/other"),
+        ];
+        let body = format_workspace_paths(&paths);
+        assert_eq!(body, "/home/user/project\n/home/user/other");
+    }
+
+    #[test]
+    fn format_workspace_paths_single_entry_has_no_trailing_newline() {
+        let paths = vec![PathBuf::from("/a")];
+        assert_eq!(format_workspace_paths(&paths), "/a");
+    }
+
+    #[test]
+    fn format_workspace_paths_empty_produces_empty_string() {
+        assert_eq!(format_workspace_paths(&[]), "");
+    }
+
+    #[test]
+    fn parse_workspace_paths_splits_lines() {
+        let body = "/home/user/project\n/home/user/other";
+        let paths = parse_workspace_paths(body);
+        assert_eq!(
+            paths,
+            [
+                PathBuf::from("/home/user/project"),
+                PathBuf::from("/home/user/other"),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_workspace_paths_skips_blank_lines() {
+        let body = "/a\n\n  \n/b";
+        let paths = parse_workspace_paths(body);
+        assert_eq!(paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn format_and_parse_round_trip() {
+        let original = vec![
+            PathBuf::from("/workspace/alpha"),
+            PathBuf::from("/workspace/beta"),
+            PathBuf::from("/workspace/gamma"),
+        ];
+        let serialized = format_workspace_paths(&original);
+        let parsed = parse_workspace_paths(&serialized);
+        assert_eq!(parsed, original);
+    }
+}
+
 /// Resolve the path to exec when restarting.
 ///
 /// `std::env::current_exe()` reads `/proc/self/exe`, which keeps pointing at the

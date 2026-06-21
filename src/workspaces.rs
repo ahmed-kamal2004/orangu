@@ -69,12 +69,22 @@ impl FromStr for WorkspacePlacement {
     }
 }
 
+/// A workspace tab identified by its directory.
+///
+/// [`WorkspaceManager`] is generic over the tab payload so the binary can hang
+/// a tab's live runtime state (its session, conversation, pending queue, …) off
+/// its own richer type while reusing the bookkeeping here; that payload only
+/// has to report its directory through [`WorkspacePath`]. `Workspace` is the
+/// minimal payload — just the directory — and the manager's default.
+pub trait WorkspacePath {
+    /// The directory this workspace is open on.
+    fn workspace_path(&self) -> &Path;
+}
+
 /// A single workspace tab.
 ///
-/// Identified by its directory. The per-tab runtime state (its session,
-/// conversation, pending queue and optional server/model override) will hang
-/// off this type as the feature is built out; for now a workspace is just the
-/// directory it is open on.
+/// Identified by its directory — the minimal [`WorkspacePath`] payload, used
+/// where only the directory matters (and as the manager's default tab type).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     path: PathBuf,
@@ -96,19 +106,25 @@ impl Workspace {
     }
 }
 
+impl WorkspacePath for Workspace {
+    fn workspace_path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// The ordered set of open workspace tabs and which one is active.
 ///
 /// Invariant: `workspaces` is never empty and `active` is always a valid index
 /// into it. Every method preserves both.
 #[derive(Debug, Clone)]
-pub struct WorkspaceManager {
-    workspaces: Vec<Workspace>,
+pub struct WorkspaceManager<W = Workspace> {
+    workspaces: Vec<W>,
     active: usize,
 }
 
-impl WorkspaceManager {
+impl<W> WorkspaceManager<W> {
     /// Start with a single workspace, which becomes the active tab (tab 1).
-    pub fn new(initial: Workspace) -> Self {
+    pub fn new(initial: W) -> Self {
         Self {
             workspaces: vec![initial],
             active: 0,
@@ -133,28 +149,23 @@ impl WorkspaceManager {
     }
 
     /// The active workspace.
-    pub fn active(&self) -> &Workspace {
+    pub fn active(&self) -> &W {
         &self.workspaces[self.active]
     }
 
     /// The active workspace, mutably.
-    pub fn active_mut(&mut self) -> &mut Workspace {
+    pub fn active_mut(&mut self) -> &mut W {
         &mut self.workspaces[self.active]
     }
 
     /// All open workspaces, in tab order.
-    pub fn workspaces(&self) -> &[Workspace] {
+    pub fn workspaces(&self) -> &[W] {
         &self.workspaces
     }
 
     /// The workspace at `index`, if any.
-    pub fn get(&self, index: usize) -> Option<&Workspace> {
+    pub fn get(&self, index: usize) -> Option<&W> {
         self.workspaces.get(index)
-    }
-
-    /// The index of the tab open on `path`, if one is.
-    pub fn position_of(&self, path: &Path) -> Option<usize> {
-        self.workspaces.iter().position(|w| w.path() == path)
     }
 
     /// Open `workspace` as a new tab to the right of the others and make it
@@ -164,23 +175,10 @@ impl WorkspaceManager {
     /// tabs. Use [`open_or_switch`](Self::open_or_switch) for the
     /// `/workspace <path>` behaviour, where an already-open directory is
     /// switched to rather than opened again.
-    pub fn open(&mut self, workspace: Workspace) -> usize {
+    pub fn open(&mut self, workspace: W) -> usize {
         self.workspaces.push(workspace);
         self.active = self.workspaces.len() - 1;
         self.active
-    }
-
-    /// Switch to the tab open on `workspace`'s path if there already is one,
-    /// otherwise open a new tab for it. Either way the matching tab ends up
-    /// active. Returns its index.
-    pub fn open_or_switch(&mut self, workspace: Workspace) -> usize {
-        match self.position_of(workspace.path()) {
-            Some(index) => {
-                self.active = index;
-                index
-            }
-            None => self.open(workspace),
-        }
     }
 
     /// Make the tab at `index` active. Returns `false` (and changes nothing) if
@@ -235,9 +233,31 @@ impl WorkspaceManager {
     }
 }
 
+impl<W: WorkspacePath> WorkspaceManager<W> {
+    /// The index of the tab open on `path`, if one is.
+    pub fn position_of(&self, path: &Path) -> Option<usize> {
+        self.workspaces
+            .iter()
+            .position(|w| w.workspace_path() == path)
+    }
+
+    /// Switch to the tab open on `workspace`'s path if there already is one,
+    /// otherwise open a new tab for it. Either way the matching tab ends up
+    /// active. Returns its index.
+    pub fn open_or_switch(&mut self, workspace: W) -> usize {
+        match self.position_of(workspace.workspace_path()) {
+            Some(index) => {
+                self.active = index;
+                index
+            }
+            None => self.open(workspace),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Workspace, WorkspaceManager, WorkspacePlacement};
+    use super::{Workspace, WorkspaceManager, WorkspacePath, WorkspacePlacement};
     use std::path::{Path, PathBuf};
 
     fn ws(path: &str) -> Workspace {
@@ -426,5 +446,56 @@ mod tests {
         assert!(manager.close(2)); // remove /c
         assert_eq!(manager.active().path(), Path::new("/a"));
         assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn workspace_path_trait_returns_same_path_as_path() {
+        let w = ws("/foo/bar");
+        assert_eq!(w.workspace_path(), w.path());
+        assert_eq!(w.workspace_path(), Path::new("/foo/bar"));
+    }
+
+    #[test]
+    fn active_mut_allows_in_place_mutation() {
+        let mut manager = WorkspaceManager::new(ws("/original"));
+        *manager.active_mut() = ws("/replaced");
+        assert_eq!(manager.active().path(), Path::new("/replaced"));
+        assert_eq!(manager.len(), 1);
+    }
+
+    #[test]
+    fn get_returns_tab_at_index_or_none() {
+        let manager = manager(&["/a", "/b", "/c"]);
+        assert_eq!(manager.get(0).map(Workspace::path), Some(Path::new("/a")));
+        assert_eq!(manager.get(1).map(Workspace::path), Some(Path::new("/b")));
+        assert_eq!(manager.get(2).map(Workspace::path), Some(Path::new("/c")));
+        assert!(manager.get(3).is_none());
+    }
+
+    struct Tagged {
+        path: PathBuf,
+        label: &'static str,
+    }
+
+    impl WorkspacePath for Tagged {
+        fn workspace_path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    #[test]
+    fn workspace_manager_works_with_custom_workspace_path_impl() {
+        let mut manager = WorkspaceManager::new(Tagged {
+            path: PathBuf::from("/x"),
+            label: "x",
+        });
+        let idx = manager.open(Tagged {
+            path: PathBuf::from("/y"),
+            label: "y",
+        });
+        assert_eq!(idx, 1);
+        assert_eq!(manager.active().label, "y");
+        assert_eq!(manager.position_of(Path::new("/x")), Some(0));
+        assert_eq!(manager.position_of(Path::new("/y")), Some(1));
     }
 }

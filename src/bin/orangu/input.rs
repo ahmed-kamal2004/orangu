@@ -15,13 +15,18 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use orangu::{
-    llm::StreamMetrics,
-    tui::{Banner, HeaderStatus, StatusFragment, TranscriptLine, visible_line_width},
+    llm::{ChatMessage, StreamMetrics},
+    session::ChatSession,
+    tui::{
+        Banner, HeaderStatus, StatusFragment, TabStatus, TranscriptLine, WorkspaceTabsView,
+        visible_line_width,
+    },
 };
 use std::{
     collections::VecDeque,
     io::Write,
     path::Path,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -50,6 +55,27 @@ pub enum InputResult {
     Submitted(String),
     Refresh,
     Quit,
+    /// Move focus to the previous workspace tab (`Alt+,`).
+    WorkspacePrevious,
+    /// Move focus to the next workspace tab (`Alt+.`).
+    WorkspaceNext,
+    /// Start a new workspace tab (`Alt+Insert`).
+    WorkspaceNew,
+    /// Close the active workspace tab (`Alt+Delete`).
+    WorkspaceClose,
+}
+
+/// An LLM response that is streaming in a background tokio task while the user
+/// has switched to another workspace tab. The handle owns the `ChatSession`
+/// and returns it together with the result when it finishes.
+pub struct PendingResponse {
+    pub(crate) stream_state: Arc<Mutex<StreamRenderState>>,
+    pub(crate) handle: tokio::task::JoinHandle<(ChatSession, anyhow::Result<String>)>,
+    pub(crate) llm_start: std::time::Instant,
+    pub(crate) tool_time_before: std::time::Duration,
+    /// Snapshot of session messages taken before the spawn so we can restore a
+    /// clean session if the user later presses Escape to cancel the response.
+    pub(crate) saved_messages: Vec<ChatMessage>,
 }
 
 pub enum WaitResult {
@@ -60,6 +86,9 @@ pub enum WaitResult {
         error: anyhow::Error,
     },
     Quit,
+    /// The prompt future is running in a background task; the caller should
+    /// store the [`PendingResponse`] on the current tab and switch to another.
+    BackgroundStreaming(PendingResponse),
 }
 
 pub struct InputEventResult {
@@ -90,6 +119,12 @@ pub struct RenderContext<'a> {
     /// inline ghost.
     pub available_models: &'a [String],
     pub skills: &'a orangu::skills::SkillRegistry,
+    /// The workspace tab bar to draw, or `None` when a single workspace is
+    /// open. Placed per the `workspaces` configuration.
+    pub tab_bar: Option<WorkspaceTabsView>,
+    /// Per-tab status dots for the tab bar, in left-to-right order. Empty when
+    /// `feedback` is off or only one tab is open.
+    pub tab_statuses: &'a [TabStatus],
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +264,10 @@ pub struct WaitContext<'a> {
     pub thinking_quote: Option<&'static str>,
     pub viewport: &'a mut ViewportState,
     pub skills: &'a orangu::skills::SkillRegistry,
+    /// When a workspace-switch key (Alt+,/./Insert/Delete) is pressed during a
+    /// wait (streaming, blocking command), the action is stored here instead of
+    /// dropped, so `main` can apply it as soon as the wait returns.
+    pub deferred_tab: &'a mut Option<crate::workspace_tab::TabAction>,
 }
 
 #[derive(Default)]
@@ -638,6 +677,39 @@ pub fn handle_input_event(
                     interrupt_state.reset();
                     input_state.delete_forward_readline_word();
                     redraw = true;
+                }
+                (KeyCode::Char(','), modifiers)
+                    if modifiers.contains(KeyModifiers::ALT)
+                        && !modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    return InputEventResult {
+                        redraw: false,
+                        outcome: Some(InputResult::WorkspacePrevious),
+                    };
+                }
+                (KeyCode::Char('.'), modifiers)
+                    if modifiers.contains(KeyModifiers::ALT)
+                        && !modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    return InputEventResult {
+                        redraw: false,
+                        outcome: Some(InputResult::WorkspaceNext),
+                    };
+                }
+                (KeyCode::Insert, modifiers) if modifiers.contains(KeyModifiers::ALT) => {
+                    return InputEventResult {
+                        redraw: false,
+                        outcome: Some(InputResult::WorkspaceNew),
+                    };
+                }
+                (KeyCode::Delete, modifiers)
+                    if modifiers.contains(KeyModifiers::ALT)
+                        && !modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    return InputEventResult {
+                        redraw: false,
+                        outcome: Some(InputResult::WorkspaceClose),
+                    };
                 }
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                     match interrupt_state.handle_interrupt(Instant::now()) {

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+use crate::commands::system_prompt_with_skills;
 use crate::*;
 
 pub(crate) fn local_command_error(err: Error) -> CommandOutcome {
@@ -652,31 +653,19 @@ pub(crate) fn handle_command(
         LocalCommand::Workspace(Some(arg)) => {
             let arg = arg.trim();
             // A bare integer is a tab number ("number is the tab, everything
-            // else is a directory"). Until tabs share one process, the active
-            // workspace is the only one open, so it is tab 1; any other number
-            // has no tab to switch to yet.
+            // else is a directory"); switch to that tab.
             if let Ok(number) = arg.parse::<usize>() {
                 if number == 0 {
                     return Ok(CommandOutcome::OutputError(
                         "Workspace numbers start at 1.".to_string(),
                     ));
                 }
-                if number == 1 {
-                    return Ok(CommandOutcome::Output("Already in workspace 1".to_string()));
-                }
-                return Ok(CommandOutcome::OutputError(format!(
-                    "No workspace {number} is open."
-                )));
+                return Ok(CommandOutcome::SwitchWorkspaceTab(number - 1));
             }
-            // Otherwise the argument is a directory: open it, or report it is
-            // already the active workspace. Re-exec into a real directory the
-            // same way `/session <path>` opens a new workspace.
+            // Otherwise the argument is a directory: open it as a tab, or switch
+            // to it if it is already open.
             match resolve_existing_dir_arg(arg) {
-                Some(dir) if dir == workspace => Ok(CommandOutcome::Output(format!(
-                    "Already in workspace {}",
-                    dir.display()
-                ))),
-                Some(dir) => Ok(CommandOutcome::SwitchWorkspace(dir)),
+                Some(dir) => Ok(CommandOutcome::OpenWorkspaceTab(dir)),
                 None => Ok(CommandOutcome::OutputError(format!(
                     "No such directory: {arg}"
                 ))),
@@ -1036,29 +1025,27 @@ mod tests {
             _ => panic!("expected the active workspace to be reported"),
         }
 
-        // Tab 1 is the active workspace; 0 and any higher number have no tab.
-        assert!(matches!(run("/workspace 1"), CommandOutcome::Output(_)));
+        // A number switches to that tab (0-based index); the loop resolves
+        // whether the tab exists. Zero is rejected up front.
+        assert!(matches!(
+            run("/workspace 1"),
+            CommandOutcome::SwitchWorkspaceTab(0)
+        ));
+        assert!(matches!(
+            run("/workspace 5"),
+            CommandOutcome::SwitchWorkspaceTab(4)
+        ));
         assert!(matches!(
             run("/workspace 0"),
             CommandOutcome::OutputError(_)
         ));
-        assert!(matches!(
-            run("/workspace 2"),
-            CommandOutcome::OutputError(_)
-        ));
 
-        // The active workspace's own path is a no-op switch.
-        match run(&format!("/workspace {}", here.display())) {
-            CommandOutcome::Output(message) => assert!(message.contains("Already in workspace")),
-            _ => panic!("expected a no-op for the active workspace path"),
-        }
-
-        // A different existing directory re-execs into it.
+        // An existing directory opens (or switches to) a tab for it.
         match run(&format!("/workspace {}", other.path().display())) {
-            CommandOutcome::SwitchWorkspace(dir) => {
+            CommandOutcome::OpenWorkspaceTab(dir) => {
                 assert_eq!(dir, crate::normalize_path(other.path()));
             }
-            _ => panic!("expected a workspace switch for a different directory"),
+            _ => panic!("expected a workspace tab open for a directory"),
         }
 
         // A path that is not a directory is rejected.
