@@ -141,6 +141,10 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "add comment on ",
     "add comment to ",
     "comment on ",
+    // --- create workspace ---
+    "create workspace ",
+    // --- delete workspace ---
+    "delete workspace",
     // --- create pull request ---
     "pull request",
     "create pull request",
@@ -796,6 +800,12 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
         &["squash", "squash branch", "squash commits", "git squash"],
     ) {
         return Some(LocalCommand::Squash);
+    }
+    if let Some(rest) = strip_ascii_prefix(input, "create workspace ") {
+        return Some(LocalCommand::CreateWorkspace(Cow::Borrowed(rest.trim())));
+    }
+    if matches_ci(input, &["delete workspace"]) {
+        return Some(LocalCommand::DeleteWorkspace);
     }
     if matches_ci(input, &["delete", "delete branch"]) {
         return Some(LocalCommand::Branch(BranchSubcommand::List));

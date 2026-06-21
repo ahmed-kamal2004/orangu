@@ -1348,6 +1348,88 @@ fn parses_pending_commands() {
     }
 }
 
+/// `create workspace <dir>` and `delete workspace` parse into the correct
+/// variants and do not shadow branch deletion for any other argument.
+#[test]
+fn parses_create_and_delete_workspace_commands() {
+    // Bare /create (no argument yet) triggers the CreateWorkspace ghost.
+    assert!(matches!(
+        parse_local_command("/create"),
+        Some(LocalCommand::CreateWorkspace(ref dir)) if dir.is_empty()
+    ));
+
+    // /create workspace with and without a path.
+    assert!(matches!(
+        parse_local_command("/create workspace"),
+        Some(LocalCommand::CreateWorkspace(ref dir)) if dir.is_empty()
+    ));
+    match parse_local_command("/create workspace ~/project") {
+        Some(LocalCommand::CreateWorkspace(dir)) => assert_eq!(dir.as_ref(), "~/project"),
+        _ => panic!("expected /create workspace ~/project"),
+    }
+    match parse_local_command("/create workspace /abs/path") {
+        Some(LocalCommand::CreateWorkspace(dir)) => assert_eq!(dir.as_ref(), "/abs/path"),
+        _ => panic!("expected /create workspace /abs/path"),
+    }
+
+    // /create with an unrecognised subcommand must not match.
+    assert!(parse_local_command("/create session").is_none());
+
+    // /delete workspace (case-insensitive) closes the current tab.
+    for input in [
+        "/delete workspace",
+        "/delete WORKSPACE",
+        "/delete Workspace",
+    ] {
+        assert!(
+            matches!(
+                parse_local_command(input),
+                Some(LocalCommand::DeleteWorkspace)
+            ),
+            "expected {input:?} to parse as DeleteWorkspace"
+        );
+    }
+
+    // /delete <branch> still routes to branch deletion, never workspace close.
+    assert!(matches!(
+        parse_local_command("/delete feature/foo"),
+        Some(LocalCommand::Branch(BranchSubcommand::Delete(_)))
+    ));
+    // The literal string "workspace" as a branch name would be odd, but /delete
+    // must intercept it as DeleteWorkspace rather than branch-delete.
+    assert!(matches!(
+        parse_local_command("/delete workspace"),
+        Some(LocalCommand::DeleteWorkspace)
+    ));
+
+    // Natural-language: `create workspace <dir>`.
+    match parse_local_command("create workspace ~/project") {
+        Some(LocalCommand::CreateWorkspace(dir)) => assert_eq!(dir.as_ref(), "~/project"),
+        _ => panic!("expected natural 'create workspace ~/project'"),
+    }
+    match parse_local_command("CREATE WORKSPACE /abs/path") {
+        Some(LocalCommand::CreateWorkspace(dir)) => assert_eq!(dir.as_ref(), "/abs/path"),
+        _ => panic!("expected case-insensitive natural create workspace"),
+    }
+
+    // Natural-language: `delete workspace`.
+    for input in ["delete workspace", "Delete Workspace", "DELETE WORKSPACE"] {
+        assert!(
+            matches!(
+                parse_local_command(input),
+                Some(LocalCommand::DeleteWorkspace)
+            ),
+            "expected {input:?} to parse as DeleteWorkspace"
+        );
+    }
+
+    // `delete <branch>` must still work in the natural-language path.
+    assert!(matches!(
+        parse_local_command("delete feature/foo"),
+        Some(LocalCommand::Branch(BranchSubcommand::Delete(_)))
+    ));
+}
+
 /// `/bisect` and its natural-language aliases parse into the right
 /// [`BisectSubcommand`], covering the optional commit/rev arguments, the
 /// case-insensitive and whitespace-tolerant slash forms, and the fall-through

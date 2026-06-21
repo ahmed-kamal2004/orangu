@@ -226,23 +226,57 @@ async fn run() -> Result<()> {
 
     // Open the first workspace tab (tab 1). Each tab is its own session; the
     // ring holds the others as the user opens more with `/workspace`/Alt+Insert.
-    let initial_tab = WorkspaceTab::open(
-        resolve_workspace_root(args.workspace)?,
-        args.resume.as_deref(),
-        true,
+    //
+    // When -a is given without an explicit --workspace/--resume, the first
+    // entry in ~/.orangu/workspaces is opened with its exact session ID so
+    // the -a loop can reliably skip it by ID and never creates a duplicate tab.
+    let saved_workspaces = if args.all {
+        load_open_workspaces()
+    } else {
+        vec![]
+    };
+    let (initial_workspace, initial_session) =
+        if args.all && args.workspace.is_none() && args.resume.is_none() {
+            if let Some((ws, sess)) = saved_workspaces.first() {
+                (ws.clone(), sess.clone())
+            } else {
+                (resolve_workspace_root(None)?, None)
+            }
+        } else {
+            (resolve_workspace_root(args.workspace)?, None)
+        };
+    let mut initial_tab = WorkspaceTab::open(
+        initial_workspace,
+        initial_session.as_deref().or(args.resume.as_deref()),
+        initial_session.is_none() && args.resume.is_none(),
         &system_prompt,
     )?;
+    // Load the initial tab's branch from session metadata so that Alt+./, and
+    // checkout_tab_branch! can restore the right branch on next tab switch.
+    if let Some(branch) = load_session_branch(&initial_tab.session_id) {
+        initial_tab.current_branch = Some(branch);
+    }
     let mut ring = WorkspaceRing::new();
-    // If -a/--all, reopen the workspace tabs that were open at the end of the
-    // last run. Skip paths that equal the initial workspace (already open) and
-    // silently ignore tabs whose directories have since been deleted.
-    if args.all {
-        for saved_workspace in load_open_workspaces() {
-            if saved_workspace != initial_tab.workspace
-                && let Ok(tab) = WorkspaceTab::open(saved_workspace, None, true, &system_prompt)
-            {
-                ring.park(tab);
+    // Reopen the remaining saved tabs as parked tabs, skipping the initial one.
+    for (saved_workspace, saved_session) in &saved_workspaces {
+        let is_initial = match saved_session {
+            Some(id) => *id == initial_tab.session_id,
+            None => *saved_workspace == initial_tab.workspace,
+        };
+        if !is_initial
+            && let Ok(mut tab) = WorkspaceTab::open(
+                saved_workspace.clone(),
+                saved_session.as_deref(),
+                saved_session.is_none(),
+                &system_prompt,
+            )
+        {
+            // Branch stored in session metadata takes precedence over the
+            // current git branch so Alt+./, restores the right branch.
+            if let Some(branch) = load_session_branch(&tab.session_id) {
+                tab.current_branch = Some(branch);
             }
+            ring.park(tab);
         }
     }
 
@@ -387,33 +421,25 @@ async fn run() -> Result<()> {
         ($action:expr) => {{
             match $action {
                 TabAction::Next => {
+                    current_branch = workspace_branch_name(tools.workspace());
                     let target = ring.rotate(current_tab!(), 1);
                     load_tab!(target);
+                    checkout_tab_branch!();
                 }
                 TabAction::Previous => {
+                    current_branch = workspace_branch_name(tools.workspace());
                     let target = ring.rotate(current_tab!(), -1);
                     load_tab!(target);
+                    checkout_tab_branch!();
                 }
                 TabAction::SwitchTo(index) => {
                     if index >= ring.total() {
                         output_state.push_text(&format!("No workspace {} is open.", index + 1));
                     } else {
+                        current_branch = workspace_branch_name(tools.workspace());
                         let target = ring.switch_to(current_tab!(), index);
                         load_tab!(target);
-                    }
-                }
-                TabAction::Open(path) => {
-                    if let Some(index) = ring.position_of(&workspace, &path) {
-                        let target = ring.switch_to(current_tab!(), index);
-                        load_tab!(target);
-                    } else {
-                        match WorkspaceTab::open(path, None, true, &system_prompt) {
-                            Ok(new_tab) => {
-                                let target = ring.open(current_tab!(), new_tab);
-                                load_tab!(target);
-                            }
-                            Err(err) => output_state.push_text(&format!("Error: {err:#}")),
-                        }
+                        checkout_tab_branch!();
                     }
                 }
                 TabAction::New => {
@@ -436,10 +462,50 @@ async fn run() -> Result<()> {
                         // `total > 1` guarantees a neighbour to focus.
                         let target = ring.close(parked).expect("more than one tab is open");
                         load_tab!(target);
+                        checkout_tab_branch!();
                     }
                 }
             }
             output_state.reset_scroll();
+        }};
+    }
+    // After loading a new tab (Next/Previous/SwitchTo/Close), switch the git
+    // repo to the branch that was active when that tab was last used.  Skips
+    // workspaces without a git root or when the branch is already correct.
+    //
+    // MUST be called after load_tab! so that `workspace`, `tools`, and
+    // `current_branch` all refer to the incoming (newly active) tab.
+    macro_rules! checkout_tab_branch {
+        () => {
+            if let Some(branch) = &current_branch {
+                if discover_git_root(&workspace).is_some()
+                    && workspace_branch_name(&workspace).as_deref() != Some(branch.as_str())
+                {
+                    if let Err(err) = git_checkout(&workspace, branch) {
+                        output_state.push_text(&format!("branch switch: {err:#}"));
+                    }
+                }
+            }
+        };
+    }
+    // Restart the per-workspace background tasks (default-branch sync, open PRs,
+    // issue metadata) after the active workspace changes. Called after load_tab!
+    // so `tools.workspace()` already points at the new workspace.
+    macro_rules! restart_sync_tasks {
+        () => {{
+            sync_notice = None;
+            sync_handle = discover_git_root(tools.workspace()).map(|_| {
+                let w = tools.workspace().to_path_buf();
+                tokio::task::spawn_blocking(move || sync_default_branch(&w, forge))
+            });
+            pr_handle = discover_git_root(tools.workspace()).map(|_| {
+                let w = tools.workspace().to_path_buf();
+                tokio::task::spawn_blocking(move || fetch_active_pull_requests(&w, forge))
+            });
+            issue_meta_handle = discover_git_root(tools.workspace()).map(|_| {
+                let w = tools.workspace().to_path_buf();
+                tokio::task::spawn_blocking(move || fetch_issue_metadata(&w, forge))
+            });
         }};
     }
     // Persist every open tab on exit so each one stays resumable — the active
@@ -448,13 +514,24 @@ async fn run() -> Result<()> {
     macro_rules! save_all_tabs {
         () => {{
             save_session_messages(&session_messages_path, session.messages())?;
-            update_session_metadata_timestamp(&session_metadata_path)?;
+            let active_branch = workspace_branch_name(tools.workspace());
+            update_session_metadata_branch(&session_metadata_path, active_branch.as_deref())?;
             for tab in ring.parked() {
                 let _ = tab.save();
             }
             {
-                let mut all_workspaces = vec![workspace.clone()];
-                all_workspaces.extend(ring.parked().iter().map(|t| t.workspace.clone()));
+                let active_pos = ring.active_pos();
+                let all_workspaces: Vec<(PathBuf, String)> = (0..ring.total())
+                    .map(|pos| {
+                        if pos == active_pos {
+                            (workspace.clone(), session_id.clone())
+                        } else {
+                            let idx = if pos < active_pos { pos } else { pos - 1 };
+                            let tab = &ring.parked()[idx];
+                            (tab.workspace.clone(), tab.session_id.clone())
+                        }
+                    })
+                    .collect();
                 save_open_workspaces(&all_workspaces);
             }
         }};
@@ -895,7 +972,62 @@ async fn run() -> Result<()> {
                 continue;
             }
             CommandOutcome::OpenWorkspaceTab(dir) => {
-                pending_tab_action = Some(TabAction::Open(dir));
+                // If the directory is already open in another tab, focus it rather
+                // than creating a duplicate.
+                if let Some(index) = ring.position_of(&workspace, &dir) {
+                    pending_tab_action = Some(TabAction::SwitchTo(index));
+                    continue;
+                }
+                let _ = save_session_messages(&session_messages_path, session.messages());
+                let _ = update_session_metadata_branch(
+                    &session_metadata_path,
+                    workspace_branch_name(tools.workspace()).as_deref(),
+                );
+                match WorkspaceTab::open(dir, None, true, &system_prompt) {
+                    Ok(new_tab) => {
+                        let target = ring.open(current_tab!(), new_tab);
+                        load_tab!(target);
+                        restart_sync_tasks!();
+                        output_state.reset_scroll();
+                    }
+                    Err(err) => {
+                        output_state.push_text(&format!("Error: {err:#}"));
+                        if config.feedback {
+                            output_state.push_text(FEEDBACK_ERR);
+                        }
+                        output_state.reset_scroll();
+                    }
+                }
+                continue;
+            }
+            CommandOutcome::CloseWorkspaceTab => {
+                pending_tab_action = Some(TabAction::Close);
+                continue;
+            }
+            CommandOutcome::ChangeWorkspace(dir) => {
+                if let Some(index) = ring.position_of(&workspace, &dir) {
+                    pending_tab_action = Some(TabAction::SwitchTo(index));
+                } else {
+                    let _ = save_session_messages(&session_messages_path, session.messages());
+                    let _ = update_session_metadata_branch(
+                        &session_metadata_path,
+                        workspace_branch_name(tools.workspace()).as_deref(),
+                    );
+                    match WorkspaceTab::open(dir, None, true, &system_prompt) {
+                        Ok(new_tab) => {
+                            load_tab!(new_tab);
+                            restart_sync_tasks!();
+                            output_state.reset_scroll();
+                        }
+                        Err(err) => {
+                            output_state.push_text(&format!("Error: {err:#}"));
+                            if config.feedback {
+                                output_state.push_text(FEEDBACK_ERR);
+                            }
+                            output_state.reset_scroll();
+                        }
+                    }
+                }
                 continue;
             }
             CommandOutcome::Quiet => {

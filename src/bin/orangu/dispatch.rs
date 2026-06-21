@@ -662,10 +662,10 @@ pub(crate) fn handle_command(
                 }
                 return Ok(CommandOutcome::SwitchWorkspaceTab(number - 1));
             }
-            // Otherwise the argument is a directory: open it as a tab, or switch
-            // to it if it is already open.
+            // Otherwise the argument is a directory: switch the current tab's
+            // workspace to it in-place, or switch to an existing tab if open.
             match resolve_existing_dir_arg(arg) {
-                Some(dir) => Ok(CommandOutcome::OpenWorkspaceTab(dir)),
+                Some(dir) => Ok(CommandOutcome::ChangeWorkspace(dir)),
                 None => Ok(CommandOutcome::OutputError(format!(
                     "No such directory: {arg}"
                 ))),
@@ -680,6 +680,21 @@ pub(crate) fn handle_command(
                 Err(err) => Ok(local_command_error(err)),
             }
         }
+        LocalCommand::CreateWorkspace(dir) => {
+            let dir = dir.trim();
+            if dir.is_empty() {
+                return Ok(CommandOutcome::OutputError(
+                    "Usage: create workspace <directory>".to_string(),
+                ));
+            }
+            match resolve_existing_dir_arg(dir) {
+                Some(path) => Ok(CommandOutcome::OpenWorkspaceTab(path)),
+                None => Ok(CommandOutcome::OutputError(format!(
+                    "No such directory: {dir}"
+                ))),
+            }
+        }
+        LocalCommand::DeleteWorkspace => Ok(CommandOutcome::CloseWorkspaceTab),
         LocalCommand::Export(target) => Ok(CommandOutcome::Export(target)),
         LocalCommand::Manual => Ok(CommandOutcome::Manual),
         LocalCommand::Usage => Ok(CommandOutcome::Output(usage_stats.format())),
@@ -1040,12 +1055,12 @@ mod tests {
             CommandOutcome::OutputError(_)
         ));
 
-        // An existing directory opens (or switches to) a tab for it.
+        // An existing directory switches the current tab's workspace in-place.
         match run(&format!("/workspace {}", other.path().display())) {
-            CommandOutcome::OpenWorkspaceTab(dir) => {
+            CommandOutcome::ChangeWorkspace(dir) => {
                 assert_eq!(dir, crate::normalize_path(other.path()));
             }
-            _ => panic!("expected a workspace tab open for a directory"),
+            _ => panic!("expected a workspace change for a directory"),
         }
 
         // A path that is not a directory is rejected.
@@ -1053,6 +1068,97 @@ mod tests {
             CommandOutcome::OutputError(message) => assert!(message.contains("No such directory")),
             _ => panic!("expected an error for a missing directory"),
         }
+    }
+
+    #[test]
+    fn create_workspace_and_delete_workspace_commands() {
+        let other = tempdir().expect("other workspace");
+        let here_dir = tempdir().expect("workspace");
+        let here = crate::normalize_path(here_dir.path());
+
+        let run = |input: &str| -> CommandOutcome {
+            let llms = HashMap::from([(
+                "llama".to_string(),
+                test_profile("llama.cpp", "http://localhost:8100/v1", "gemma"),
+            )]);
+            let tools = ToolExecutor::new(&here);
+            let mut active_model = "llama".to_string();
+            let mut active_model_id = "gemma".to_string();
+            let mut current_endpoint = Some(normalized_openai_endpoint("http://localhost:8100/v1"));
+            let mut session = ChatSession::new("system");
+            handle_command(
+                input,
+                CommandState {
+                    active_model: &mut active_model,
+                    active_model_id: &mut active_model_id,
+                    current_endpoint: &mut current_endpoint,
+                    session: &mut session,
+                    detect_model: &mut false,
+                },
+                CommandContext {
+                    skills: &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+                    startup_model: "llama",
+                    startup_endpoint: "http://localhost:8100/v1",
+                    llms: &llms,
+                    tools: &tools,
+                    workspace: &here,
+                    usage_stats: &super::UsageStats::new(),
+                    available_models: &[],
+                    virtual_width: 512,
+                    auto_rebase: false,
+                    auto_squash: false,
+                    terminal: "",
+                    forge: crate::git::Forge::GitHub,
+                    review_reports: crate::git::ReviewReports::default(),
+                },
+            )
+            .expect("handle command")
+        };
+
+        // An existing directory opens a new workspace tab.
+        match run(&format!("/create workspace {}", other.path().display())) {
+            CommandOutcome::OpenWorkspaceTab(dir) => {
+                assert_eq!(dir, crate::normalize_path(other.path()));
+            }
+            _ => panic!("expected OpenWorkspaceTab for an existing directory"),
+        }
+
+        // Natural-language form works too.
+        match run(&format!("create workspace {}", other.path().display())) {
+            CommandOutcome::OpenWorkspaceTab(dir) => {
+                assert_eq!(dir, crate::normalize_path(other.path()));
+            }
+            _ => panic!("expected OpenWorkspaceTab for natural-language create"),
+        }
+
+        // A non-existent directory is rejected.
+        assert!(matches!(
+            run("/create workspace /no/such/orangu/dir"),
+            CommandOutcome::OutputError(_)
+        ));
+
+        // Bare `/create` (no directory) shows a usage error.
+        assert!(matches!(run("/create"), CommandOutcome::OutputError(_)));
+
+        // `/delete workspace` closes the current tab.
+        assert!(matches!(
+            run("/delete workspace"),
+            CommandOutcome::CloseWorkspaceTab
+        ));
+
+        // Natural-language form closes the current tab.
+        assert!(matches!(
+            run("delete workspace"),
+            CommandOutcome::CloseWorkspaceTab
+        ));
+
+        // `/delete <branch>` still routes to branch deletion, not workspace close.
+        assert!(matches!(
+            run("/delete some-feature-branch"),
+            CommandOutcome::Output(_)
+                | CommandOutcome::OutputError(_)
+                | CommandOutcome::Blocking(_)
+        ));
     }
 
     #[test]

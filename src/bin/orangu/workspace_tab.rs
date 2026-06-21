@@ -189,7 +189,10 @@ impl WorkspaceTab {
         if self.pending_response.is_none() {
             save_session_messages(&self.session_messages_path, self.session.messages())?;
         }
-        update_session_metadata_timestamp(&self.session_metadata_path)?;
+        update_session_metadata_branch(
+            &self.session_metadata_path,
+            self.current_branch.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -336,9 +339,6 @@ pub(crate) enum TabAction {
     Previous,
     /// Focus the tab at the given full-order index (`/workspace <number>`).
     SwitchTo(usize),
-    /// Open `path` as a new tab, or switch to it if already open
-    /// (`/workspace <path>`).
-    Open(PathBuf),
     /// Start a fresh tab on the active workspace's directory (`Alt+Insert`); the
     /// user re-points it with `/workspace` afterwards.
     New,

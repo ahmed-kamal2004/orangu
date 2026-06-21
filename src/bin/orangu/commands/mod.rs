@@ -137,9 +137,13 @@ pub enum CommandOutcome {
     /// Switch to the open workspace tab at the given full-order index
     /// (`/workspace <number>`).
     SwitchWorkspaceTab(usize),
-    /// Open a directory as a workspace tab, or switch to it if already open
-    /// (`/workspace <path>`).
+    /// Switch the active tab's workspace to the given path in-place, or switch
+    /// to the existing tab that already has it open (`/workspace <path>`).
+    ChangeWorkspace(PathBuf),
+    /// Open the given directory in a new workspace tab (`create workspace <dir>`).
     OpenWorkspaceTab(PathBuf),
+    /// Close the current workspace tab (`delete workspace`).
+    CloseWorkspaceTab,
     Blocking(Box<dyn FnOnce() -> anyhow::Result<String> + Send + 'static>),
     /// A long-running command that streams its output line by line through the
     /// sink as it is produced, rather than returning it all at once.
@@ -369,6 +373,10 @@ pub enum LocalCommand<'a> {
     /// (or switch to) that directory. The number-vs-path split happens in
     /// dispatch, mirroring how `Session` disambiguates its argument.
     Workspace(Option<Cow<'a, str>>),
+    /// `create workspace <dir>`: open a new tab for the given directory.
+    CreateWorkspace(Cow<'a, str>),
+    /// `delete workspace`: close the current workspace tab.
+    DeleteWorkspace,
     Export(ExportTarget),
     Manual,
     Usage,

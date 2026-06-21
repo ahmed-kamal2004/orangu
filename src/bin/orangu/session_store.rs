@@ -47,53 +47,62 @@ fn open_workspaces_path() -> Option<PathBuf> {
     Some(home::home_dir()?.join(OPEN_WORKSPACES_FILE))
 }
 
-/// Record the open workspace directories, one per line, so `orangu -a` can
-/// reopen them next time. Errors are ignored: failing to save the layout must
-/// never block exit.
-pub(crate) fn save_open_workspaces(workspaces: &[PathBuf]) {
+/// Record the open workspace directories and session IDs, one per line, so
+/// `orangu -a` can reopen them next time.  Branch information is stored in
+/// each session's metadata file instead.  Errors are ignored: failing to save
+/// the layout must never block exit.
+pub(crate) fn save_open_workspaces(workspaces: &[(PathBuf, String)]) {
     let Some(path) = open_workspaces_path() else {
         return;
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, format_workspace_paths(workspaces));
+    let _ = std::fs::write(&path, format_workspace_entries(workspaces));
 }
 
-fn format_workspace_paths(workspaces: &[PathBuf]) -> String {
+/// Format is `<path>\t<session-id>\n` per entry.  Every entry ends with a
+/// newline so the file is a well-formed POSIX text file.
+fn format_workspace_entries(workspaces: &[(PathBuf, String)]) -> String {
     use std::fmt::Write as FmtWrite;
     let mut body = String::new();
-    for (i, workspace) in workspaces.iter().enumerate() {
-        if i > 0 {
-            body.push('\n');
-        }
-        write!(body, "{}", workspace.display()).ok();
+    for (workspace, session_id) in workspaces {
+        writeln!(body, "{}\t{}", workspace.display(), session_id).ok();
     }
     body
 }
 
-/// The workspace directories saved by the last run that still exist, in order.
-/// Read by `orangu -a|--all`; missing directories are skipped so a deleted
-/// project does not get recreated on restore.
-pub(crate) fn load_open_workspaces() -> Vec<PathBuf> {
+/// The workspace directories and session IDs saved by the last run that still
+/// exist, in tab-bar order.  Read by `orangu -a|--all`; missing directories
+/// are skipped so a deleted project does not get recreated.
+///
+/// Accepts two formats for backward compatibility with pre-session-ID files:
+/// - `<path>\t<session-id>` (current format)
+/// - `<path>` (path-only, session auto-resumed on open)
+pub(crate) fn load_open_workspaces() -> Vec<(PathBuf, Option<String>)> {
     let Some(path) = open_workspaces_path() else {
         return Vec::new();
     };
     let Ok(contents) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    parse_workspace_paths(&contents)
+    parse_workspace_entries(&contents)
         .into_iter()
-        .filter(|workspace| workspace.is_dir())
+        .filter(|(workspace, _)| workspace.is_dir())
         .collect()
 }
 
-fn parse_workspace_paths(contents: &str) -> Vec<PathBuf> {
+fn parse_workspace_entries(contents: &str) -> Vec<(PathBuf, Option<String>)> {
     contents
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
+        .map(|line| {
+            let mut parts = line.splitn(2, '\t');
+            let path = PathBuf::from(parts.next().unwrap_or(""));
+            let session_id = parts.next().filter(|s| !s.is_empty()).map(str::to_string);
+            (path, session_id)
+        })
         .collect()
 }
 
@@ -102,56 +111,119 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_workspace_paths_joins_with_newlines() {
-        let paths = vec![
-            PathBuf::from("/home/user/project"),
-            PathBuf::from("/home/user/other"),
+    fn format_workspace_entries_writes_two_fields_with_trailing_newline() {
+        let entries = vec![
+            (PathBuf::from("/home/user/project"), "uuid-1".to_string()),
+            (PathBuf::from("/home/user/other"), "uuid-2".to_string()),
         ];
-        let body = format_workspace_paths(&paths);
-        assert_eq!(body, "/home/user/project\n/home/user/other");
-    }
-
-    #[test]
-    fn format_workspace_paths_single_entry_has_no_trailing_newline() {
-        let paths = vec![PathBuf::from("/a")];
-        assert_eq!(format_workspace_paths(&paths), "/a");
-    }
-
-    #[test]
-    fn format_workspace_paths_empty_produces_empty_string() {
-        assert_eq!(format_workspace_paths(&[]), "");
-    }
-
-    #[test]
-    fn parse_workspace_paths_splits_lines() {
-        let body = "/home/user/project\n/home/user/other";
-        let paths = parse_workspace_paths(body);
+        let body = format_workspace_entries(&entries);
         assert_eq!(
-            paths,
+            body,
+            "/home/user/project\tuuid-1\n/home/user/other\tuuid-2\n"
+        );
+    }
+
+    #[test]
+    fn format_workspace_entries_empty_produces_empty_string() {
+        assert_eq!(format_workspace_entries(&[]), "");
+    }
+
+    #[test]
+    fn parse_workspace_entries_reads_two_field_format() {
+        let body = "/home/user/project\tuuid-1\n/home/user/other\tuuid-2\n";
+        let entries = parse_workspace_entries(body);
+        assert_eq!(
+            entries,
             [
-                PathBuf::from("/home/user/project"),
-                PathBuf::from("/home/user/other"),
+                (
+                    PathBuf::from("/home/user/project"),
+                    Some("uuid-1".to_string())
+                ),
+                (
+                    PathBuf::from("/home/user/other"),
+                    Some("uuid-2".to_string())
+                ),
             ]
         );
     }
 
     #[test]
-    fn parse_workspace_paths_skips_blank_lines() {
-        let body = "/a\n\n  \n/b";
-        let paths = parse_workspace_paths(body);
-        assert_eq!(paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    fn parse_workspace_entries_accepts_old_path_only_format() {
+        let body = "/a\n/b\n";
+        let entries = parse_workspace_entries(body);
+        assert_eq!(
+            entries,
+            [(PathBuf::from("/a"), None), (PathBuf::from("/b"), None),]
+        );
+    }
+
+    #[test]
+    fn parse_workspace_entries_skips_blank_lines() {
+        let body = "/a\tuuid-1\n\n  \n/b\tuuid-2\n";
+        let entries = parse_workspace_entries(body);
+        assert_eq!(
+            entries,
+            [
+                (PathBuf::from("/a"), Some("uuid-1".to_string())),
+                (PathBuf::from("/b"), Some("uuid-2".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn update_session_metadata_branch_persists_and_load_session_branch_retrieves() {
+        use tempfile::tempdir;
+        let dir = tempdir().expect("temp dir");
+        let meta_path = dir.path().join("metadata");
+
+        // Write a minimal metadata file so update/load have something to work with.
+        let initial = SessionMetadata {
+            started_at: 1_000_000,
+            last_updated_at: 1_000_000,
+            workspace: "/some/workspace".to_string(),
+            branch: String::new(),
+        };
+        save_session_metadata(&meta_path, &initial).expect("save initial");
+
+        // A session ID that resolves to our temp directory does not exist in the
+        // standard location, so load_session_branch can only be tested via the
+        // lower-level update/load pair here.
+        update_session_metadata_branch(&meta_path, Some("feature/test-branch"))
+            .expect("update branch");
+
+        let loaded = load_session_metadata(&meta_path)
+            .expect("read ok")
+            .expect("metadata present");
+        assert_eq!(loaded.branch, "feature/test-branch");
+        // last_updated_at must have been bumped.
+        assert!(loaded.last_updated_at >= initial.last_updated_at);
+
+        // Setting branch to None leaves the existing value unchanged.
+        update_session_metadata_branch(&meta_path, None).expect("no-op update");
+        let after_noop = load_session_metadata(&meta_path)
+            .expect("read ok")
+            .expect("metadata present");
+        assert_eq!(after_noop.branch, "feature/test-branch");
+
+        // An empty string branch via Some("") should still write an empty branch.
+        update_session_metadata_branch(&meta_path, Some("")).expect("clear branch");
+        let after_clear = load_session_metadata(&meta_path)
+            .expect("read ok")
+            .expect("metadata present");
+        assert_eq!(after_clear.branch, "");
     }
 
     #[test]
     fn format_and_parse_round_trip() {
         let original = vec![
-            PathBuf::from("/workspace/alpha"),
-            PathBuf::from("/workspace/beta"),
-            PathBuf::from("/workspace/gamma"),
+            (PathBuf::from("/workspace/alpha"), "aaa-111".to_string()),
+            (PathBuf::from("/workspace/beta"), "bbb-222".to_string()),
         ];
-        let serialized = format_workspace_paths(&original);
-        let parsed = parse_workspace_paths(&serialized);
-        assert_eq!(parsed, original);
+        let serialized = format_workspace_entries(&original);
+        let parsed = parse_workspace_entries(&serialized);
+        let expected: Vec<(PathBuf, Option<String>)> =
+            original.into_iter().map(|(p, id)| (p, Some(id))).collect();
+        assert_eq!(parsed, expected);
     }
 }
 
@@ -300,12 +372,32 @@ pub(crate) fn load_session_metadata(path: &Path) -> Result<Option<SessionMetadat
     }
 }
 
-pub(crate) fn update_session_metadata_timestamp(path: &Path) -> Result<()> {
+/// Update both `last_updated_at` and `branch` in the session metadata file.
+/// When `branch` is `None` the branch field is left as-is.
+pub(crate) fn update_session_metadata_branch(path: &Path, branch: Option<&str>) -> Result<()> {
     if let Ok(Some(mut meta)) = load_session_metadata(path) {
         meta.last_updated_at = current_unix_timestamp();
+        if let Some(b) = branch {
+            meta.branch = b.to_string();
+        }
         save_session_metadata(path, &meta)?;
     }
     Ok(())
+}
+
+/// Read the `branch` field from `~/.orangu/sessions/<session_id>/metadata`.
+/// Returns `None` when the session doesn't exist, the file can't be read, or
+/// the branch field is empty (the session was started outside a git repo).
+pub(crate) fn load_session_branch(session_id: &str) -> Option<String> {
+    let path = session_dir_path(session_id).ok()?;
+    let meta = load_session_metadata(&path.join("metadata"))
+        .ok()
+        .flatten()?;
+    if meta.branch.is_empty() {
+        None
+    } else {
+        Some(meta.branch)
+    }
 }
 
 pub(crate) fn find_session_for_workspace_branch(workspace: &str, branch: &str) -> Option<String> {

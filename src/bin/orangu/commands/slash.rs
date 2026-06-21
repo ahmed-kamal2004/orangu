@@ -78,6 +78,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/stash" => Some(LocalCommand::Stash(StashSubcommand::Push)),
         "/bisect" => Some(LocalCommand::Bisect(BisectSubcommand::Status)),
         "/status" => Some(LocalCommand::Status),
+        "/create" => Some(LocalCommand::CreateWorkspace(Cow::Borrowed(""))),
         "/manual" => Some(LocalCommand::Manual),
         "/usage" => Some(LocalCommand::Usage),
         "/clear" => Some(LocalCommand::Clear),
@@ -305,8 +306,17 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             if let Some(sub) = input.strip_prefix("/bisect ") {
                 return Some(LocalCommand::Bisect(parse_bisect_subcommand(sub)));
             }
+            if let Some(sub) = input.strip_prefix("/create ") {
+                let sub = sub.trim();
+                if let Some(dir) = sub.strip_prefix("workspace") {
+                    return Some(LocalCommand::CreateWorkspace(Cow::Borrowed(dir.trim())));
+                }
+            }
             if let Some(args) = input.strip_prefix("/delete ") {
                 let branch = args.trim();
+                if branch.eq_ignore_ascii_case("workspace") {
+                    return Some(LocalCommand::DeleteWorkspace);
+                }
                 if !branch.is_empty() {
                     return Some(LocalCommand::Branch(BranchSubcommand::Delete(
                         Cow::Borrowed(branch),

@@ -79,6 +79,7 @@ pub const COMMANDS: &[&str] = &[
     "/pending",
     "/session",
     "/workspace",
+    "/create",
     "/manual",
     "/usage",
     "/build",
@@ -262,6 +263,23 @@ fn structured_completion_candidates(
 
     if let Some((start, candidates)) = export_completion_candidates(prefix) {
         return Some((start, cursor, candidates));
+    }
+
+    // `/create workspace <dir>`: mirror the same completion logic as `/workspace
+    // <dir>` — previously-seen workspace paths first, then filesystem directory
+    // completion for paths starting with `~`, `/`, or `.`.
+    if prefix == "/create " {
+        return Some(("/create ".len(), cursor, vec!["workspace".to_string()]));
+    }
+    if let Some(arg_prefix) = prefix.strip_prefix("/create workspace ") {
+        let mut candidates: Vec<String> = session_workspaces_newest_first()
+            .into_iter()
+            .filter(|w| w.starts_with(arg_prefix))
+            .collect();
+        if candidates.is_empty() {
+            candidates = session_path_completion_candidates(arg_prefix);
+        }
+        return Some(("/create workspace ".len(), cursor, candidates));
     }
 
     if let Some((start, candidates)) = checkout_completion_candidates(prefix, workspace) {
