@@ -140,13 +140,15 @@ pub fn help_text() -> &'static str {
 /prune [<uuid>|-w <path>|-o <days>|all]       Remove sessions
 /session [uuid|workspace]                     List/switch sessions, or open a workspace directory (Tab completes UUIDs, workspaces, then filesystem paths)
 /workspace [number|path]                      Show the active workspace, switch to a tab by number, or open a directory (Tab completes workspaces, then filesystem paths)
+/create workspace <dir>                       Open a new workspace tab on an existing directory (like Alt+Insert + /workspace)
+/delete workspace                             Close the active workspace tab (like Alt+Delete)
 /list_files                                   List workspace files as a tree
 /open_file <path>                             Open a workspace file in $EDITOR
 /show_file [--hash] [--author] <path> [<ref>] Show a file; optional ref uses git show
 /build                                        Build the project
-/export [console|review]                      Export the output window (console) or the last review report (review) to a PDF in the workspace root
+/export [console|review|auto review]          Export the output window (console), the last review report (review), or the last auto-review report (auto review) to a PDF in the workspace root
 /add_file <path>                              Stage a file or directory with git add
-/auto_review [<file>]                         LLM auto review in a split view: the whole branch, or one Tab-completed file (the full file on main/master, its changes on a branch)
+/auto_review [<file>] [immediate]             LLM auto review in a split view: the whole branch, or one Tab-completed file (the full file on main/master, its changes on a branch); add immediate to start the run at once
 /amend <message>                              Rewrite the last commit message with git commit --amend
 /bisect [start|good|bad|skip|reset|log]       Binary-search history for the commit that introduced a bug (git bisect); bare /bisect shows the session status
 /branch [<name>|-a|-b|-m|-d <name>]           List, switch, create, rename or delete a branch
@@ -179,7 +181,7 @@ pub fn help_text() -> &'static str {
 /clear                                        Clear the current conversation
 /quit                                         Exit the client
 
-Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `fetch`, `fetch upstream`, `status`, `rebase`, `rebase origin/main`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `comment on 48 with review`, `comment on 48 with auto review`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `auto review`, `export console`, `export review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `bisect start`, `mark good`, `mark bad`, `bisect reset`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `pending`, `workspace`, `workspace 1`, `switch workspace ~/project`, `show manual`, and `show help` are also handled locally.
+Natural-language forms such as `open README.md`, `list models`, `list files`, `pull 58`, `log`, `fetch`, `fetch upstream`, `status`, `rebase`, `rebase origin/main`, `squash`, `merge feature/foo`, `grep <pattern>`, `find <pattern>`, `branch`, `list branches`, `checkout main`, `switch to main`, `create branch feature/x`, `rename to new-name`, `delete feature/foo`, `restore README.md`, `add README.md`, `remove README.md`, `move old.rs new.rs`, `cherry pick abc1234`, `commit "[#42] My feature"`, `amend "[#42] My feature"`, `push`, `force push`, `add comment on 51 "My comment"`, `comment on 48 with review`, `comment on 48 with auto review`, `get comments for issue 51`, `get comments for pull request 58`, `review`, `auto review`, `export console`, `export review`, `export auto review`, `create pull request`, `stash`, `stash pop`, `stash list`, `stash drop`, `bisect start`, `mark good`, `mark bad`, `bisect reset`, `init repo`, `prune session <uuid>`, `prune all`, `prune sessions older than <days>`, `prune sessions in <path>`, `restart`, `pending`, `workspace`, `workspace 1`, `switch workspace ~/project`, `create workspace ~/project`, `delete workspace`, `show manual`, and `show help` are also handled locally.
 
 The prompt uses standard Unix shell keys, including Ctrl+Left, Ctrl+Right, Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+Backspace, Alt+D, and Tab completion.
 

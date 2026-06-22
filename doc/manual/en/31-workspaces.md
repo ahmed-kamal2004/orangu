@@ -45,6 +45,30 @@ switch workspace ~/projects/orangu
 
 \newpage
 
+## /create workspace and /delete workspace
+
+`/create workspace <dir>` opens a new tab on an existing directory — the slash-command equivalent of `Alt+Insert` followed by `/workspace <dir>`. The directory must already exist; orangu resolves it, opens a tab on it (resuming the matching session there, or starting a fresh one), and switches to it. A missing or non-existent directory is reported as an error.
+
+`/delete workspace` closes the active tab — the slash-command equivalent of `Alt+Delete`. The remaining tabs are renumbered and focus moves to a neighbour. The last open tab is never closed; use `/quit` to leave orangu.
+
+Both are handled locally and work regardless of server or model state.
+
+### Examples
+
+```text
+/create workspace ~/projects/orangu
+/delete workspace
+```
+
+Natural-language forms:
+
+```text
+create workspace ~/projects/orangu
+delete workspace
+```
+
+\newpage
+
 ## Key bindings
 
 At the prompt, the workspace tabs are driven by these keys:

@@ -20,6 +20,8 @@ The sync runs in the background so it never delays startup. Its progress and res
 | `-w`  | `--workspace` | Workspace root the local tools operate on. Defaults to `.`.   |
 | `-r`  | `--resume`    | Resume a specific session by UUID.                            |
 | `-a`  | `--all`       | Reopen the workspace tabs that were open at the end of the last run. |
+| `-i`  | `--init`      | Interactively create `~/.orangu/orangu.conf` and exit (see the Configuration chapter). |
+| `-s`  | `--shell-completions` | Print the shell completion script for the detected shell (`$SHELL`; bash, zsh, or fish) and exit. |
 
 ## Header
 
