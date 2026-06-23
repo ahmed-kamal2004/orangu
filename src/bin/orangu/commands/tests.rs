@@ -22,6 +22,44 @@ fn leaves_regular_prompts_unhandled() {
 }
 
 #[test]
+fn parses_prune_commands() {
+    // The natural "older than" form maps the day count to `OlderThan`, matching
+    // the `/prune --older-than <days>` slash flag — previously the bare number
+    // was misread as a session UUID.
+    assert!(matches!(
+        parse_local_command("prune sessions older than 7"),
+        Some(LocalCommand::Prune(Some(PruneTarget::OlderThan(7))))
+    ));
+    assert!(matches!(
+        parse_local_command("/prune --older-than 7"),
+        Some(LocalCommand::Prune(Some(PruneTarget::OlderThan(7))))
+    ));
+    // A non-numeric "older than" argument is not a prune command (left to be
+    // handled as a prompt) rather than silently pruning a bogus UUID.
+    assert!(parse_local_command("prune sessions older than soon").is_none());
+
+    // The other forms still parse as before.
+    match parse_local_command("prune session abc-123") {
+        Some(LocalCommand::Prune(Some(PruneTarget::Uuid(uuid)))) => assert_eq!(uuid, "abc-123"),
+        _ => panic!("expected uuid prune"),
+    }
+    match parse_local_command("prune sessions in ~/project") {
+        Some(LocalCommand::Prune(Some(PruneTarget::Workspace(path)))) => {
+            assert_eq!(path, "~/project")
+        }
+        _ => panic!("expected workspace prune"),
+    }
+    assert!(matches!(
+        parse_local_command("prune all"),
+        Some(LocalCommand::Prune(Some(PruneTarget::All)))
+    ));
+    assert!(matches!(
+        parse_local_command("prune"),
+        Some(LocalCommand::Prune(None))
+    ));
+}
+
+#[test]
 fn parses_workspace_commands() {
     // Bare forms, slash and natural, list/report the active workspace.
     assert!(matches!(

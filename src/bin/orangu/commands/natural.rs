@@ -847,10 +847,17 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     if matches_ci(input, &["workspace", "workspaces", "switch workspace"]) {
         return Some(LocalCommand::Workspace(None));
     }
-    for prefix in ["prune session ", "prune sessions older than "] {
-        if let Some(rest) = strip_ascii_prefix(input, prefix) {
-            return Some(LocalCommand::Prune(parse_prune_args(rest.trim())));
-        }
+    // Checked before `prune session ` (not a prefix of this, but kept adjacent
+    // for clarity): the day count is a number, not a session UUID, so map it to
+    // `OlderThan` rather than letting `parse_prune_args` treat the bare token as
+    // a UUID. A non-numeric argument falls through to be handled as a prompt.
+    if let Some(rest) = strip_ascii_prefix(input, "prune sessions older than ")
+        && let Ok(days) = rest.trim().parse::<u64>()
+    {
+        return Some(LocalCommand::Prune(Some(PruneTarget::OlderThan(days))));
+    }
+    if let Some(rest) = strip_ascii_prefix(input, "prune session ") {
+        return Some(LocalCommand::Prune(parse_prune_args(rest.trim())));
     }
     if let Some(rest) = strip_ascii_prefix(input, "prune sessions in ") {
         let path = rest.trim();

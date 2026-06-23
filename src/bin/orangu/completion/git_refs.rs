@@ -70,6 +70,151 @@ pub fn checkout_completion_candidates(
     Some((start, candidates))
 }
 
+/// Tab/ghost completion for the `/branch -…` flag forms. The bare `/branch
+/// <name>` switch form is owned by [`checkout_completion_candidates`] (which
+/// offers branches and files); this handles only the flagged forms so they are
+/// not swallowed by that switch completion.
+///
+/// - `/branch -` offers the flag names `-a`, `--all`, `-b`, `-d`, `-m`;
+/// - `/branch -d <name>` completes the deletable (non-protected) local
+///   branches, matching `/delete <name>`;
+/// - `/branch -b <name>` / `-m <name>` create or rename to a brand-new name, so
+///   they are recognised but offer nothing.
+///
+/// Returns `None` for the switch form and for anything that is not `/branch`.
+pub fn branch_completion_candidates(
+    prefix: &str,
+    workspace: &Path,
+) -> Option<(usize, Vec<String>)> {
+    let rest = prefix.strip_prefix("/branch ")?;
+    if !rest.starts_with('-') {
+        return None;
+    }
+    if let Some(name) = rest.strip_prefix("-d ") {
+        let candidates = discover_git_root(workspace)
+            .map(|root| git_local_branch_names(&root))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| !crate::git::is_protected_branch(b) && b.starts_with(name))
+            .collect();
+        return Some(("/branch -d ".len(), candidates));
+    }
+    if rest.starts_with("-b ") || rest.starts_with("-m ") {
+        return Some((prefix.len(), Vec::new()));
+    }
+    let candidates = ["-a", "--all", "-b", "-d", "-m"]
+        .into_iter()
+        .filter(|flag| flag.starts_with(rest))
+        .map(str::to_string)
+        .collect();
+    Some(("/branch ".len(), candidates))
+}
+
+/// Tab/ghost completion for `/restore` and its natural-language aliases
+/// (`restore `, `git restore `): the working-tree files to restore.
+/// - the bare `<file>` argument completes the modified (unstaged) files;
+/// - `/restore --staged <file>` / `-S <file>` completes the staged files to
+///   unstage (the flags only apply to the slash form, mirroring the parser);
+/// - `/restore -` offers the `--staged` / `-S` flag names.
+///
+/// Returns `None` when `prefix` is not a restore command.
+pub fn restore_completion_candidates(
+    prefix: &str,
+    workspace: &Path,
+) -> Option<(usize, Vec<String>)> {
+    let (start, rest, allow_flags) = if let Some(rest) = prefix.strip_prefix("/restore ") {
+        ("/restore ".len(), rest, true)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git restore ") {
+        (prefix.len() - rest.len(), rest, false)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "restore ") {
+        (prefix.len() - rest.len(), rest, false)
+    } else {
+        return None;
+    };
+
+    if allow_flags {
+        for flag in ["--staged ", "-S "] {
+            if let Some(file) = rest.strip_prefix(flag) {
+                let candidates = discover_git_root(workspace)
+                    .map(|root| git_modified_candidates(&root, file, true))
+                    .unwrap_or_default();
+                return Some((start + flag.len(), candidates));
+            }
+        }
+        if rest.starts_with('-') {
+            let candidates = ["--staged", "-S"]
+                .into_iter()
+                .filter(|flag| flag.starts_with(rest))
+                .map(str::to_string)
+                .collect();
+            return Some((start, candidates));
+        }
+    }
+
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_modified_candidates(&root, rest, false))
+        .unwrap_or_default();
+    Some((start, candidates))
+}
+
+/// Tab/ghost completion for the `/push` flag: `/push -` (or a bare `/push `)
+/// offers `--force`, `-f`, and the bare `force` keyword the parser also accepts.
+/// Slash-only — the natural-language push phrases (`push force`, `push --force`,
+/// …) are complete bindings the natural-language ghost already covers.
+pub fn push_completion_candidates(prefix: &str) -> Option<(usize, Vec<String>)> {
+    let rest = prefix.strip_prefix("/push ")?;
+    let candidates = ["--force", "-f", "force"]
+        .into_iter()
+        .filter(|flag| flag.starts_with(rest))
+        .map(str::to_string)
+        .collect();
+    Some(("/push ".len(), candidates))
+}
+
+/// Tab/ghost completion for the `/stash` subcommand: `/stash ` offers `pop`,
+/// `list`, `drop`, and the explicit `push`. Slash-only — the natural-language
+/// stash phrases (`stash pop`, `git stash list`, …) are complete bindings the
+/// natural-language ghost already covers.
+pub fn stash_completion_candidates(prefix: &str) -> Option<(usize, Vec<String>)> {
+    let rest = prefix.strip_prefix("/stash ")?;
+    let candidates = ["pop", "list", "drop", "push"]
+        .into_iter()
+        .filter(|sub| sub.starts_with(rest))
+        .map(str::to_string)
+        .collect();
+    Some(("/stash ".len(), candidates))
+}
+
+/// The modified files in the repository whose path starts with `token`, as
+/// reported by `git diff --name-only` — the unstaged working-tree changes, or
+/// the staged changes when `staged` is set (`--cached`). Drives `/restore`
+/// completion; an empty list outside a repository or on failure.
+pub fn git_modified_candidates(repo_root: &Path, token: &str, staged: bool) -> Vec<String> {
+    let mut args = vec!["diff", "--name-only"];
+    if staged {
+        args.push("--cached");
+    }
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(&args)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut files: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.is_empty() && line.starts_with(token))
+        .map(str::to_string)
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 pub fn add_file_completion_candidates(
     prefix: &str,
     workspace: &Path,

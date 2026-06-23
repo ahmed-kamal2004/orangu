@@ -24,6 +24,7 @@ mod files;
 mod ghost;
 mod git_refs;
 mod issue;
+mod prune;
 mod pull;
 mod session;
 
@@ -32,6 +33,7 @@ pub use files::*;
 pub use ghost::*;
 pub use git_refs::*;
 pub use issue::*;
+pub use prune::*;
 pub use pull::*;
 pub(crate) use session::*;
 
@@ -282,6 +284,32 @@ fn structured_completion_candidates(
         return Some(("/create workspace ".len(), cursor, candidates));
     }
 
+    if let Some((start, candidates)) = close_completion_candidates(prefix) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = get_comments_completion_candidates(prefix) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = push_completion_candidates(prefix) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = stash_completion_candidates(prefix) {
+        return Some((start, cursor, candidates));
+    }
+
+    if let Some((start, candidates)) = restore_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
+    // `/branch -…` flag forms first, so they are not swallowed by the switch-form
+    // branch completion below.
+    if let Some((start, candidates)) = branch_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
     if let Some((start, candidates)) = checkout_completion_candidates(prefix, workspace) {
         return Some((start, cursor, candidates));
     }
@@ -355,13 +383,33 @@ fn structured_completion_candidates(
     }
 
     if let Some((start, branch_prefix)) = delete_branch_completion_prefix(prefix) {
-        let branches = discover_git_root(workspace)
+        let mut branches: Vec<String> = discover_git_root(workspace)
             .map(|root| git_local_branch_names(&root))
             .unwrap_or_default()
             .into_iter()
             .filter(|b| !is_protected_branch(b) && b.starts_with(branch_prefix))
             .collect();
+        // The slash form `/delete workspace` also deletes the active workspace
+        // tab, so offer the `workspace` literal — leading it once a matching
+        // prefix is typed so it ghosts (`/delete w` -> `workspace`).
+        if prefix.starts_with("/delete ")
+            && !branch_prefix.is_empty()
+            && "workspace".starts_with(branch_prefix)
+        {
+            branches.insert(0, "workspace".to_string());
+        }
         return Some((start, cursor, branches));
+    }
+
+    if let Some(arg_prefix) = prefix.strip_prefix("/pending ") {
+        // `/pending <list|delete>`: the two subcommands. `delete` takes a
+        // free-form index after it, so `/pending delete 2` narrows to nothing.
+        let candidates = ["list", "delete"]
+            .into_iter()
+            .filter(|sub| sub.starts_with(arg_prefix))
+            .map(str::to_string)
+            .collect();
+        return Some(("/pending ".len(), cursor, candidates));
     }
 
     if let Some(arg_prefix) = prefix.strip_prefix("/session ") {
@@ -402,15 +450,8 @@ fn structured_completion_candidates(
         return Some(("/workspace ".len(), cursor, candidates));
     }
 
-    if let Some(uuid_prefix) = prefix.strip_prefix("/prune ")
-        && !uuid_prefix.starts_with('-')
-        && !uuid_prefix.eq_ignore_ascii_case("all")
-    {
-        let candidates = session_uuids_newest_first()
-            .into_iter()
-            .filter(|u| u.starts_with(uuid_prefix))
-            .collect();
-        return Some(("/prune ".len(), cursor, candidates));
+    if let Some((start, candidates)) = prune_completion_candidates(prefix) {
+        return Some((start, cursor, candidates));
     }
 
     None
@@ -491,6 +532,66 @@ mod tests {
         // Not an export argument.
         assert!(export_completion_candidates("/export").is_none());
         assert!(export_completion_candidates("/exports x").is_none());
+    }
+
+    #[test]
+    fn prune_dash_ghosts_the_first_flag() {
+        // Typing `/prune -` previews `--workspace` inline (Tab fills it in), and
+        // narrows to the matching flag as more is typed. The structured ghost
+        // reuses `prune_completion_candidates`, so the natural-language and
+        // workspace/uuid forms get the same inline hint.
+        let skills = orangu::skills::SkillRegistry::discover(std::path::Path::new("/"));
+        assert_eq!(
+            completion_ghost_suffix(
+                "/prune -",
+                "/prune -".len(),
+                std::path::Path::new("/"),
+                &[],
+                &[],
+                &skills
+            ),
+            Some("-workspace".to_string())
+        );
+        assert_eq!(
+            completion_ghost_suffix(
+                "/prune --o",
+                "/prune --o".len(),
+                std::path::Path::new("/"),
+                &[],
+                &[],
+                &skills
+            ),
+            Some("lder-than".to_string())
+        );
+    }
+
+    #[test]
+    fn push_stash_pending_complete_their_subcommands() {
+        let workspace = std::path::Path::new("/");
+        let skills = orangu::skills::SkillRegistry::discover(workspace);
+        let candidates = |input: &str| {
+            completion_candidates(input, input.len(), workspace, &[], &[], &skills)
+                .expect("completion")
+                .2
+        };
+
+        // `/push` flags (including the bare `force` keyword the parser accepts).
+        assert_eq!(candidates("/push "), vec!["--force", "-f", "force"]);
+        assert_eq!(candidates("/push f"), vec!["force".to_string()]);
+
+        // `/stash` subcommands.
+        assert_eq!(candidates("/stash "), vec!["pop", "list", "drop", "push"]);
+        assert_eq!(candidates("/stash p"), vec!["pop", "push"]);
+
+        // `/pending` subcommands.
+        assert_eq!(candidates("/pending "), vec!["list", "delete"]);
+        assert_eq!(candidates("/pending d"), vec!["delete".to_string()]);
+
+        // The inline ghost previews the first one (`/stash p` -> `op`).
+        assert_eq!(
+            completion_ghost_suffix("/stash p", "/stash p".len(), workspace, &[], &[], &skills),
+            Some("op".to_string())
+        );
     }
 
     #[test]

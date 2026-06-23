@@ -362,6 +362,139 @@ fn completes_checkout_branches_and_files() {
 }
 
 #[test]
+fn completes_branch_delete_flag_without_shadowing() {
+    let workspace = tempdir().expect("workspace");
+    init_test_git_repo(workspace.path());
+    std::process::Command::new("git")
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(workspace.path())
+        .status()
+        .expect("set initial branch to main");
+    fs::write(workspace.path().join("main.rs"), "").expect("main.rs");
+    for args in [
+        &["add", "main.rs"][..],
+        &["commit", "--quiet", "-m", "initial"][..],
+        &["checkout", "--quiet", "-b", "feature"][..],
+        &["checkout", "--quiet", "main"][..],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git")
+                .success()
+        );
+    }
+
+    // `/branch -` offers the flag names (and ghosts the first).
+    let (start, _, flags) = completion_candidates(
+        "/branch -",
+        "/branch -".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("branch flag completion");
+    assert_eq!(start, "/branch ".len());
+    assert_eq!(flags, vec!["-a", "--all", "-b", "-d", "-m"]);
+
+    // `/branch -d <name>` completes deletable branches — previously this was
+    // shadowed by the switch-form completion and returned nothing useful.
+    let (start, _, candidates) = completion_candidates(
+        "/branch -d f",
+        "/branch -d f".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("branch -d completion");
+    assert_eq!(start, "/branch -d ".len());
+    assert_eq!(candidates, vec!["feature".to_string()]);
+
+    // The protected current branch is never offered for deletion.
+    let (_, _, all) = completion_candidates(
+        "/branch -d ",
+        "/branch -d ".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("branch -d completion");
+    assert!(!all.contains(&"main".to_string()), "{all:?}");
+}
+
+#[test]
+fn completes_restore_modified_files() {
+    let workspace = tempdir().expect("workspace");
+    init_test_git_repo(workspace.path());
+    fs::write(workspace.path().join("tracked.rs"), "one").expect("tracked.rs");
+    for args in [
+        &["add", "tracked.rs"][..],
+        &["commit", "--quiet", "-m", "initial"][..],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git")
+                .success()
+        );
+    }
+    // Modify the tracked file so it shows up as an unstaged change.
+    fs::write(workspace.path().join("tracked.rs"), "two").expect("modify tracked.rs");
+
+    let (start, _, candidates) = completion_candidates(
+        "/restore t",
+        "/restore t".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("restore completion");
+    assert_eq!(start, "/restore ".len());
+    assert_eq!(candidates, vec!["tracked.rs".to_string()]);
+
+    // `/restore -` offers the staged flags.
+    let (_, _, flags) = completion_candidates(
+        "/restore -",
+        "/restore -".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("restore flag completion");
+    assert_eq!(flags, vec!["--staged".to_string(), "-S".to_string()]);
+
+    // Staging the change moves it to the `--staged` list.
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "tracked.rs"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git add")
+            .success()
+    );
+    let (start, _, staged) = completion_candidates(
+        "/restore --staged t",
+        "/restore --staged t".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("staged restore completion");
+    assert_eq!(start, "/restore --staged ".len());
+    assert_eq!(staged, vec!["tracked.rs".to_string()]);
+}
+
+#[test]
 fn completes_fetch_remotes_with_origin_first() {
     let workspace = tempdir().expect("workspace");
     init_test_git_repo(workspace.path());

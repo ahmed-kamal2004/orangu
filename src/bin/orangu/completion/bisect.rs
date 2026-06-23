@@ -18,13 +18,33 @@ use std::path::Path;
 use super::git_commit_hashes;
 use crate::git::discover_git_root;
 
-/// Tab completion for `/bisect <subcommand> <commit>`: after `/bisect start`,
-/// `/bisect good`, `/bisect bad`, or `/bisect skip` with a trailing space,
-/// offer commit hashes from the repository.
+/// The `/bisect` subcommand verbs, in the order they are offered (and ghosted)
+/// while the verb is still being typed. Mirrors [`parse_bisect_subcommand`].
+const BISECT_VERBS: [&str; 7] = ["start", "good", "bad", "skip", "reset", "log", "status"];
+
+/// Tab completion for `/bisect <subcommand> <commit>`:
+/// - while the verb is still being typed (no space yet) offer the subcommand
+///   verbs, so `/bisect ` lists them and `/bisect st` completes to `start`;
+/// - after `/bisect start`, `/bisect good`, `/bisect bad`, or `/bisect skip`
+///   with a trailing space, offer commit hashes from the repository;
+/// - the no-argument verbs (`reset`, `log`, `status`) are recognised but offer
+///   nothing once a space follows.
 pub fn bisect_completion_candidates(
     prefix: &str,
     workspace: &Path,
 ) -> Option<(usize, Vec<String>)> {
+    let rest = prefix.strip_prefix("/bisect ")?;
+
+    // Still typing the verb (no whitespace yet): offer the subcommand names.
+    if !rest.contains(char::is_whitespace) {
+        let candidates = BISECT_VERBS
+            .into_iter()
+            .filter(|verb| verb.starts_with(rest))
+            .map(str::to_string)
+            .collect();
+        return Some(("/bisect ".len(), candidates));
+    }
+
     let commit_subcommands = [
         "/bisect start ",
         "/bisect good ",
@@ -45,7 +65,10 @@ pub fn bisect_completion_candidates(
             return Some((cmd.len(), candidates));
         }
     }
-    None
+
+    // A no-argument verb (reset/log/status) followed by text: recognised, but
+    // nothing to complete.
+    Some((prefix.len(), Vec::new()))
 }
 
 #[cfg(test)]
@@ -54,12 +77,29 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn returns_none_for_non_commit_prefixes() {
+    fn completes_the_subcommand_verb() {
         let dir = tempdir().expect("tempdir");
-        // Subcommands that take no commit argument, or a different command,
-        // produce no candidates.
-        assert!(bisect_completion_candidates("/bisect ", dir.path()).is_none());
-        assert!(bisect_completion_candidates("/bisect reset", dir.path()).is_none());
+        // A bare `/bisect ` lists every verb, in offer order.
+        let (start, all) =
+            bisect_completion_candidates("/bisect ", dir.path()).expect("verb candidates");
+        assert_eq!(start, "/bisect ".len());
+        assert_eq!(
+            all,
+            ["start", "good", "bad", "skip", "reset", "log", "status"]
+        );
+        // A partial verb narrows to the matching ones (`s` -> start, skip, status).
+        let (_, s) = bisect_completion_candidates("/bisect s", dir.path()).expect("candidates");
+        assert_eq!(s, ["start", "skip", "status"]);
+        // A no-argument verb followed by text is recognised but offers nothing.
+        let (_, none) =
+            bisect_completion_candidates("/bisect reset ", dir.path()).expect("recognised");
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn returns_none_for_non_bisect_prefixes() {
+        let dir = tempdir().expect("tempdir");
+        // A different command is not recognised.
         assert!(bisect_completion_candidates("/branch good ", dir.path()).is_none());
     }
 
