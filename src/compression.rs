@@ -289,7 +289,11 @@ pub fn prepare_llm_diff_context_with_stats(
         CompressionStats {
             original_lines,
             compressed_lines,
-            pattern_matched: Some("git_diff".to_string()),
+            pattern_matched: if compressed_lines < original_lines {
+                Some("git_diff".to_string())
+            } else {
+                None
+            },
         },
     )
 }
@@ -340,7 +344,11 @@ pub fn prepare_llm_file_context_with_stats(
         CompressionStats {
             original_lines,
             compressed_lines,
-            pattern_matched: Some("file".to_string()),
+            pattern_matched: if compressed_lines < original_lines {
+                Some("file".to_string())
+            } else {
+                None
+            },
         },
     )
 }
@@ -431,7 +439,11 @@ pub fn prepare_llm_grep_context_with_stats(
         CompressionStats {
             original_lines,
             compressed_lines,
-            pattern_matched: Some("grep".to_string()),
+            pattern_matched: if compressed_lines < original_lines {
+                Some("grep".to_string())
+            } else {
+                None
+            },
         },
     )
 }
