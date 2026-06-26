@@ -1093,6 +1093,57 @@ fn completes_cherry_pick_commits() {
 }
 
 #[test]
+fn completes_show_with_recent_local_commits() {
+    let workspace = tempdir().expect("workspace");
+    init_test_git_repo(workspace.path());
+    fs::write(workspace.path().join("readme.md"), "initial").expect("readme");
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "readme.md"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["commit", "--quiet", "-m", "first commit"])
+            .current_dir(workspace.path())
+            .status()
+            .expect("git commit")
+            .success()
+    );
+
+    // `/show ` with no token offers the recent local commit hashes, newest
+    // first — so the just-made commit is the first candidate (and inline ghost).
+    let (start, _, candidates) = completion_candidates(
+        "/show ",
+        "/show ".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("show completion");
+    assert_eq!(start, "/show ".len());
+    assert!(!candidates.is_empty());
+    assert!(candidates.iter().all(|h| h.len() >= 4));
+    assert!(candidates.len() <= 25);
+
+    // The natural-language `git show ` form triggers the same completion.
+    let (start, _, _) = completion_candidates(
+        "git show ",
+        "git show ".len(),
+        workspace.path(),
+        &[],
+        &[],
+        &orangu::skills::SkillRegistry::discover(std::path::Path::new("/")),
+    )
+    .expect("git show completion");
+    assert_eq!(start, "git show ".len());
+}
+
+#[test]
 fn auto_review_completes_files_by_name_per_branch() {
     let _env_lock = crate::process_env_lock()
         .lock()

@@ -491,6 +491,37 @@ pub(crate) fn handle_command(
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),
         },
+        LocalCommand::Show(commit) => match show_output(workspace, commit.as_deref()) {
+            Ok(output) => {
+                let (context, stats) = orangu::compression::prepare_llm_diff_context_with_stats(
+                    &output,
+                    compression,
+                    tools.diff_file_cap(),
+                );
+                if let Ok(mut metrics) = tools.compression_metrics.lock() {
+                    metrics.record(&stats);
+                }
+                let mut llm_msg = String::new();
+                match commit.as_deref() {
+                    Some(commit) => {
+                        llm_msg.push_str(&format!("The user executed `/show {}`. Output:\n\n", commit))
+                    }
+                    None => llm_msg.push_str("The user executed `/show`. Output:\n\n"),
+                }
+                if let Some(note) = context.note {
+                    llm_msg.push_str(&note);
+                    llm_msg.push_str("\n\n");
+                }
+                llm_msg.push_str("```diff\n");
+                llm_msg.push_str(&context.content);
+                llm_msg.push_str("\n```");
+                Ok(CommandOutcome::OutputWithLlmContext {
+                    display: output,
+                    llm_context: llm_msg,
+                })
+            }
+            Err(err) => Ok(local_command_error(err)),
+        },
         LocalCommand::Fetch(remote) => match fetch_output(workspace, remote.as_deref(), forge) {
             Ok(output) => Ok(CommandOutcome::Output(output)),
             Err(err) => Ok(local_command_error(err)),

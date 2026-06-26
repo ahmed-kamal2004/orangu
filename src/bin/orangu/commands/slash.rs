@@ -60,6 +60,7 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
         "/grep" => Some(LocalCommand::Grep(None)),
         "/init_repo" => Some(LocalCommand::InitRepo),
         "/log" => Some(LocalCommand::Log(None)),
+        "/show" => Some(LocalCommand::Show(None)),
         "/fetch" => Some(LocalCommand::Fetch(None)),
         "/merge" => Some(LocalCommand::Merge(None)),
         "/move_file" => Some(LocalCommand::MoveFile(None)),
@@ -142,6 +143,14 @@ pub fn parse_slash_command(input: &str) -> Option<LocalCommand<'_>> {
             }
             if let Some(args) = input.strip_prefix("/log ") {
                 return Some(LocalCommand::Log(args.trim().parse::<u64>().ok()));
+            }
+            if let Some(args) = input.strip_prefix("/show ") {
+                let commit = args.trim();
+                return Some(LocalCommand::Show(if commit.is_empty() {
+                    None
+                } else {
+                    Some(Cow::Borrowed(commit))
+                }));
             }
             if let Some(args) = input.strip_prefix("/fetch ") {
                 let remote = args.trim();

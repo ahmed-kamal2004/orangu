@@ -63,6 +63,37 @@ git lg
 
 \newpage
 
+## /show
+
+Shows a single commit — its header (author, date, message) followed by its diff — by running `git show`.
+
+Without an argument it shows the current `HEAD`; pass a commit to show a specific one (any revision `git show` accepts: an abbreviated hash, a tag, `HEAD~2`, a branch name, …). Inside a Git repository it applies any configured non-interactive Git pager such as `delta`, exactly like `/diff`. Tab completion after `/show ` (or the natural-language forms `git show ` / `show commit `) offers the abbreviated hashes of the latest 25 commits on the current branch — newest first, so the most recent commit previews as the inline ghost.
+
+### Examples
+
+Show the latest commit:
+
+```text
+/show
+```
+
+Show a specific commit:
+
+```text
+/show aafd1cb
+```
+
+Natural-language forms:
+
+```text
+git show
+show commit
+git show aafd1cb
+show commit aafd1cb
+```
+
+\newpage
+
 ## /diff
 
 Shows a color unified diff.

@@ -288,6 +288,10 @@ fn structured_completion_candidates(
         return Some((start, cursor, candidates));
     }
 
+    if let Some((start, candidates)) = show_completion_candidates(prefix, workspace) {
+        return Some((start, cursor, candidates));
+    }
+
     if let Some((start, candidates)) = fetch_completion_candidates(prefix, workspace) {
         return Some((start, cursor, candidates));
     }

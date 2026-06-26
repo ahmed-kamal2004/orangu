@@ -22,8 +22,8 @@ It currently sits on the model-facing tool boundary: tool output is shortened
 or replaced only when orangu can do so deterministically.
 
 This means it currently applies to the tool results sent back to the model,
-as well as the context populated by native user commands. For example, `/show_file`
-and `/diff` render their output directly to the user in full, but they queue their
+as well as the context populated by native user commands. For example, `/show_file`,
+`/diff`, and `/show` render their output directly to the user in full, but they queue their
 content locally. When the LLM is actually called, this queued context is then
 compressed and injected into the active session. This ensures we only compress
 and transmit data when the model's reasoning is actively requested.
@@ -46,7 +46,7 @@ When it is `off`, orangu returns the raw output.
 Compression currently affects two model-facing tools, as well as the LLM context
 populated by native commands.
 
-While native commands like `/show_file` and `/diff` continue to display their full,
+While native commands like `/show_file`, `/diff`, and `/show` continue to display their full,
 uncompressed output directly to the user, they now automatically compress their
 payload when injecting it into the model's context. This lets the LLM follow along
 with your local investigation without flooding its context window.
@@ -125,7 +125,7 @@ It provides:
 - Structural read modes (`signatures` and `map`)
 - Shell output compression for common noisy commands
 - Tracking metrics exposed via `/usage`
-- Native command integration (e.g., `/show_file`, `/diff`) sending compressed context to the LLM
+- Native command integration (e.g., `/show_file`, `/diff`, `/show`) sending compressed context to the LLM
 - A single config switch for enabling or disabling the behavior
 - Transcript compaction and tool-output eviction (Live Zone)
 - Advanced structural diff compression (File Capping, Context Trimming, Hunk Scoring)

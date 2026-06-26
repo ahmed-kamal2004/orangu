@@ -349,6 +349,9 @@ pub enum LocalCommand<'a> {
     AutoReview(Option<Cow<'a, str>>, bool),
     Status,
     Log(Option<u64>),
+    /// `/show [<commit>]`: show a single commit (header plus diff). `None`
+    /// defaults to `HEAD`.
+    Show(Option<Cow<'a, str>>),
     Fetch(Option<Cow<'a, str>>),
     Pull(Option<u64>),
     Comment(Option<(u64, CommentBody<'a>)>),

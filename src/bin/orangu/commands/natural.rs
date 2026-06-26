@@ -110,6 +110,11 @@ pub const NATURAL_LANGUAGE_BINDINGS: &[&str] = &[
     "show log",
     "git log",
     "git lg",
+    // --- show ---
+    "git show ",
+    "show commit ",
+    "git show",
+    "show commit",
     // --- fetch ---
     "fetch",
     "git fetch",
@@ -442,6 +447,17 @@ pub fn parse_natural_language_command(input: &str) -> Option<LocalCommand<'_>> {
     }
     if matches_ci(input, &["log", "show log", "git log", "git lg"]) {
         return Some(LocalCommand::Log(None));
+    }
+    for prefix in ["git show ", "show commit "] {
+        if let Some(commit) = strip_ascii_prefix(input, prefix) {
+            let commit = commit.trim();
+            if !commit.is_empty() {
+                return Some(LocalCommand::Show(Some(Cow::Borrowed(commit))));
+            }
+        }
+    }
+    if matches_ci(input, &["git show", "show commit"]) {
+        return Some(LocalCommand::Show(None));
     }
     for prefix in ["fetch ", "git fetch "] {
         if let Some(remote) = strip_ascii_prefix(input, prefix) {

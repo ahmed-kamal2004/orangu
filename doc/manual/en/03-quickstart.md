@@ -117,6 +117,8 @@ Then start with:
 /init_repo
 /log
 /log 5
+/show
+/show aafd1cb
 /merge feature/foo
 /move_file old.rs new.rs
 /pull 42

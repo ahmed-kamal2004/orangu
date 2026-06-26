@@ -59,6 +59,48 @@ pub fn git_diff_against_branch(workspace: &Path, branch: &str) -> Result<String>
     }
 }
 
+/// Show a single commit (`git show <commit>`), defaulting to `HEAD` when no
+/// commit is given. The output is a commit header followed by its diff, rendered
+/// like the `/diff` tool: colorized and piped through the configured
+/// non-interactive `show` pager (falling back to `core.pager`, e.g. `delta`)
+/// when one is set.
+pub fn show_output(workspace: &Path, commit: Option<&str>) -> Result<String> {
+    let Some(repo_root) = discover_git_root(workspace) else {
+        return workspace_is_not_git(workspace);
+    };
+    let terminal_width = current_terminal_width();
+
+    let mut command = std::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(&repo_root)
+        .arg("show")
+        .arg("--color=always");
+    if let Some(commit) = commit {
+        command.arg(commit);
+    }
+    command.env("COLUMNS", terminal_width.to_string());
+
+    let output = command.output().context("failed to run git show")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(
+            "git show failed{}",
+            if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            }
+        ));
+    }
+
+    if let Some(pager_command) = configured_git_pager(&repo_root, "show")? {
+        run_git_diff_pager(&repo_root, &pager_command, &output.stdout, terminal_width)
+    } else {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
 /// Start a `git -C <root> diff --color=always` command; callers append the
 /// range and pathspec they need.
 fn colorized_git_diff_command(repo_root: &Path) -> std::process::Command {

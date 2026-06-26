@@ -94,8 +94,8 @@ use git::{
     git_workspace_diff, grep_output, init_repo_output, issue_field_output,
     list_workspace_files_tree, log_output, merge_output, move_file_output, open_in_editor,
     pull_request_output, push_output, rebase_output, remove_file_output, restore_output,
-    squash_output, stash_drop_output, stash_list_output, stash_output, stash_pop_output,
-    status_output, sync_default_branch, workspace_branch_name,
+    show_output, squash_output, stash_drop_output, stash_list_output, stash_output,
+    stash_pop_output, status_output, sync_default_branch, workspace_branch_name,
 };
 use input::{
     EscapeCancelState, IDLE_STATUS_REFRESH_INTERVAL, InputContext, InputResult, InputState,

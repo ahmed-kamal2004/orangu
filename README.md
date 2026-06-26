@@ -44,7 +44,7 @@ orangu is the lean, private, Git-centric coding companion for the terminal — b
 
 **Code review built in.** orangu's standout feature is a pair of in-terminal review workflows — an interactive reviewer and a fully automated, LLM-driven one — covered in [Code review and auto review](#code-review-and-auto-review) below.
 
-**Workspace-aware tooling.** Local tools read, edit, list, search (`/grep`), and fetch files, and run shell commands — all scoped to your workspace. A full set of Git commands (`/status`, `/diff`, `/log`, `/commit`, `/amend`, `/squash`, `/rebase`, `/merge`, `/cherry_pick`, `/branch`, `/stash`, `/bisect`, `/push`, `/pull`, …) and forge integration (`/pull_request`, `/comment`, `/close`, `/get_comments` on GitHub and GitLab) keep the whole change-and-review loop in one place.
+**Workspace-aware tooling.** Local tools read, edit, list, search (`/grep`), and fetch files, and run shell commands — all scoped to your workspace. A full set of Git commands (`/status`, `/diff`, `/log`, `/show`, `/commit`, `/amend`, `/squash`, `/rebase`, `/merge`, `/cherry_pick`, `/branch`, `/stash`, `/bisect`, `/push`, `/pull`, …) and forge integration (`/pull_request`, `/comment`, `/close`, `/get_comments` on GitHub and GitLab) keep the whole change-and-review loop in one place.
 
 **Advanced Context Compression Engine.** orangu protects the LLM's context window and minimizes latency using a state-of-the-art compression pipeline. Features include AST-aware file downsampling, an intelligent Git diff engine, session fingerprinting, secret redaction, and automatic transcript compaction. See the [Compression](doc/manual/en/75-compression.md) manual for details.
 
@@ -283,6 +283,8 @@ Useful first commands:
 /delete feature/foo
 /log
 /log 5
+/show
+/show aafd1cb
 /squash
 /status
 ```

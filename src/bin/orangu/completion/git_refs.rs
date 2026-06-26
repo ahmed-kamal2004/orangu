@@ -319,6 +319,60 @@ pub fn cherry_pick_completion_candidates(
     Some((cmd_len, candidates))
 }
 
+/// Tab/ghost completion for `/show <commit>` (and its natural-language forms
+/// `git show ` / `show commit `): the abbreviated hashes of the latest 25
+/// commits reachable from the local `HEAD`, filtered by the typed token. The
+/// most recent commit is offered first, so it previews as the inline ghost.
+/// Returns `None` when the input is not a show command, leaving the
+/// slash-command list to complete the command name itself.
+pub fn show_completion_candidates(prefix: &str, workspace: &Path) -> Option<(usize, Vec<String>)> {
+    let (start, token) = if let Some(rest) = prefix.strip_prefix("/show ") {
+        ("/show ".len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "git show ") {
+        (prefix.len() - rest.len(), rest)
+    } else if let Some(rest) = strip_ascii_prefix(prefix, "show commit ") {
+        (prefix.len() - rest.len(), rest)
+    } else {
+        return None;
+    };
+    let token = token.trim_start();
+    let candidates = discover_git_root(workspace)
+        .map(|root| git_recent_commit_hashes(&root, token))
+        .unwrap_or_default();
+    Some((start, candidates))
+}
+
+/// The abbreviated hashes of the latest 25 commits reachable from the local
+/// `HEAD`, in newest-first order, whose hash starts with `token`. Unlike
+/// [`git_commit_hashes`] (which walks `origin/main`/`main` for cherry-pick), this
+/// walks the current branch locally so `/show` completes commits that are not
+/// yet pushed. Returns an empty list outside a repository or on failure.
+pub fn git_recent_commit_hashes(repo_root: &Path, token: &str) -> Vec<String> {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args([
+            "log",
+            "--abbrev-commit",
+            "--format=%h",
+            "--max-count=25",
+            "HEAD",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|h| !h.is_empty() && h.starts_with(token))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Completion candidates for `/fetch <remote>` (and its natural-language forms
 /// `fetch ` / `git fetch `): the configured remotes whose name starts with the
 /// typed token, in [`git_remote_names`] order so the default — `origin` floated

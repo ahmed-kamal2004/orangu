@@ -360,6 +360,24 @@ fn parses_natural_language_commands_with_arguments() {
 }
 
 #[test]
+fn parses_show_commands() {
+    // Bare forms default to HEAD (`None`).
+    for input in ["/show", "git show", "show commit"] {
+        assert!(
+            matches!(parse_local_command(input), Some(LocalCommand::Show(None))),
+            "{input:?} should parse to /show HEAD"
+        );
+    }
+    // A commit argument is carried through, trimmed.
+    for input in ["/show abc123", "git show abc123", "show commit abc123"] {
+        match parse_local_command(input) {
+            Some(LocalCommand::Show(Some(commit))) => assert_eq!(commit, "abc123"),
+            _ => panic!("{input:?} expected /show abc123"),
+        }
+    }
+}
+
+#[test]
 fn parses_pull_request_commands() {
     assert!(matches!(
         parse_local_command("/pull 58"),
