@@ -61,7 +61,7 @@ _orangu() {
 
     if [[ "$cur" == -* ]]; then
         COMPREPLY=( $(compgen -W \
-            "-c --config -w --workspace -r --resume -i --init -s --shell-completions -h --help" -- "$cur") )
+            "-c --config -w --workspace -r --resume -a --all -l --list -i --init -s --shell-completions -h --help" -- "$cur") )
         return 0
     fi
 }
@@ -103,6 +103,8 @@ _orangu() {
         '(-c --config)'{-c,--config}'[Path to the configuration file (orangu.conf)]:config file:_files' \
         '(-w --workspace)'{-w,--workspace}'[Workspace root for local tools]:workspace:_orangu_workspaces' \
         '(-r --resume)'{-r,--resume}'[Resume a session by UUID]:session uuid:_orangu_sessions' \
+        '(-a --all)'{-a,--all}'[Reopen the workspace tabs from the previous run]' \
+        '(-l --list)'{-l,--list}'[List all stored sessions as a table and exit]' \
         '(-i --init)'{-i,--init}'[Interactively create ~/.orangu/orangu.conf and exit]' \
         '(-s --shell-completions)'{-s,--shell-completions}'[Print shell completion script for the detected shell and exit]' \
         '(-h --help)'{-h,--help}'[Print help]'
@@ -137,6 +139,8 @@ end
 complete -c orangu -s c -l config           -r                          -d 'Path to the configuration file (orangu.conf)'
 complete -c orangu -s w -l workspace         -x -a '(__orangu_workspaces)' -d 'Workspace root for local tools'
 complete -c orangu -s r -l resume            -x -a '(__orangu_sessions)'   -d 'Resume a session by UUID'
+complete -c orangu -s a -l all                                            -d 'Reopen the workspace tabs from the previous run'
+complete -c orangu -s l -l list                                           -d 'List all stored sessions as a table and exit'
 complete -c orangu -s i -l init                                           -d 'Interactively create ~/.orangu/orangu.conf and exit'
 complete -c orangu -s s -l shell-completions                              -d 'Print shell completion script for the detected shell and exit'
 complete -c orangu -s h -l help                                           -d 'Print help'

@@ -263,7 +263,7 @@ Or run it directly from the build tree:
 
 By default, local tools operate on the current working directory. Use `--workspace /path/to/project` (`-w`) to point **orangu** at another tree.
 
-The startup flags also have short forms: `-c` for `--config`, `-w` for `--workspace`, `-r` for `--resume`, `-a` for `--all` (reopen the last run's workspace tabs), `-i` for `--init`, and `-s` for `--shell-completions`.
+The startup flags also have short forms: `-c` for `--config`, `-w` for `--workspace`, `-r` for `--resume`, `-a` for `--all` (reopen the last run's workspace tabs), `-l` for `--list` (print every stored session as a table and exit), `-i` for `--init`, and `-s` for `--shell-completions`.
 
 Shell completion scripts (bash, zsh, fish) for these flags live in [`contrib/shell/`](contrib/shell/README.md).
 

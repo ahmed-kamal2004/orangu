@@ -315,6 +315,17 @@ pub(crate) fn format_unix_timestamp(secs: u64) -> String {
     format!("{y:04}{m:02}{d:02}{hour:02}{min:02}")
 }
 
+/// Like [`format_unix_timestamp`] but spelled out as `YYYY-MM-DD HH:MM` for
+/// human-facing output such as the `orangu -l|--list` table.
+pub(crate) fn format_unix_timestamp_human(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let hour = rem / 3600;
+    let min = (rem % 3600) / 60;
+    let (y, m, d) = days_to_ymd(days);
+    format!("{y:04}-{m:02}-{d:02} {hour:02}:{min:02}")
+}
+
 pub(crate) fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
     let mut year = 1970u32;
     loop {
@@ -611,6 +622,97 @@ pub(crate) fn list_sessions_output(
             row.uuid, row.started, row.last, row.cmds, row.branch, row.workspace
         ));
     }
+    Ok(lines.join("\n"))
+}
+
+/// Render every stored session as a plain `SESSION  WORKSPACE  BRANCH  DATE`
+/// table, columns sized to the widest value, for `orangu -l|--list`. DATE is the
+/// session's last-updated timestamp. Sessions are listed newest-first by start
+/// time. Always ends with a trailing newline.
+pub(crate) fn list_all_sessions_output() -> Result<String> {
+    let sessions_dir = {
+        let home = home::home_dir().ok_or_else(|| anyhow!("failed to resolve home directory"))?;
+        home.join(SESSIONS_DIRECTORY)
+    };
+
+    if !sessions_dir.exists() {
+        return Ok("No sessions found.\n".to_string());
+    }
+
+    let mut entries: Vec<(String, Option<SessionMetadata>)> = Vec::new();
+    for entry in std::fs::read_dir(&sessions_dir).with_context(|| {
+        format!(
+            "failed to read sessions directory {}",
+            sessions_dir.display()
+        )
+    })? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(uuid) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let meta = load_session_metadata(&path.join("metadata")).ok().flatten();
+        entries.push((uuid, meta));
+    }
+
+    if entries.is_empty() {
+        return Ok("No sessions found.\n".to_string());
+    }
+
+    entries.sort_by_key(|e| std::cmp::Reverse(e.1.as_ref().map(|m| m.started_at).unwrap_or(0)));
+
+    struct Row {
+        session: String,
+        workspace: String,
+        branch: String,
+        date: String,
+    }
+    let rows: Vec<Row> = entries
+        .iter()
+        .map(|(uuid, meta)| Row {
+            session: uuid.clone(),
+            workspace: meta
+                .as_ref()
+                .filter(|m| !m.workspace.is_empty())
+                .map(|m| m.workspace.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            branch: meta
+                .as_ref()
+                .filter(|m| !m.branch.is_empty())
+                .map(|m| m.branch.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            date: meta
+                .as_ref()
+                .map(|m| format_unix_timestamp_human(m.last_updated_at))
+                .unwrap_or_else(|| "-".to_string()),
+        })
+        .collect();
+
+    let col_width = |header: &str, value: &dyn Fn(&Row) -> &str| {
+        rows.iter()
+            .map(|r| value(r).chars().count())
+            .chain(std::iter::once(header.chars().count()))
+            .max()
+            .unwrap_or(0)
+    };
+    let w_session = col_width("SESSION", &|r| &r.session);
+    let w_workspace = col_width("WORKSPACE", &|r| &r.workspace);
+    let w_branch = col_width("BRANCH", &|r| &r.branch);
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!(
+        "{:<w_session$}  {:<w_workspace$}  {:<w_branch$}  {}",
+        "SESSION", "WORKSPACE", "BRANCH", "DATE"
+    ));
+    for row in &rows {
+        lines.push(format!(
+            "{:<w_session$}  {:<w_workspace$}  {:<w_branch$}  {}",
+            row.session, row.workspace, row.branch, row.date
+        ));
+    }
+    lines.push(String::new());
     Ok(lines.join("\n"))
 }
 

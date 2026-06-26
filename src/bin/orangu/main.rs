@@ -125,6 +125,9 @@ struct Args {
     /// (saved in ~/.orangu/workspaces).
     #[arg(short = 'a', long = "all")]
     all: bool,
+    /// List all stored sessions as a table (SESSION, WORKSPACE, BRANCH) and exit.
+    #[arg(short = 'l', long = "list")]
+    list: bool,
     /// Interactively create ~/.orangu/orangu.conf and exit.
     #[arg(short, long)]
     init: bool,
@@ -179,6 +182,10 @@ async fn run() -> Result<()> {
     let args = Args::parse();
     if args.shell_completions {
         return print_shell_completions();
+    }
+    if args.list {
+        print!("{}", list_all_sessions_output()?);
+        return Ok(());
     }
     if args.init {
         return init::run_init().await;

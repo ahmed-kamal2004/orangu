@@ -10,6 +10,8 @@ completion script for the shell detected from `$SHELL`, then source it:
 | `-c`  | `--config`            | files         |
 | `-w`  | `--workspace`         | directories   |
 | `-r`  | `--resume`            | session UUIDs |
+| `-a`  | `--all`               | —             |
+| `-l`  | `--list`              | —             |
 | `-i`  | `--init`              | —             |
 | `-s`  | `--shell-completions` | —             |
 | `-h`  | `--help`              | —             |

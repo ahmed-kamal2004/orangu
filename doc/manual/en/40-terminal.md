@@ -20,6 +20,7 @@ The sync runs in the background so it never delays startup. Its progress and res
 | `-w`  | `--workspace` | Workspace root the local tools operate on. Defaults to `.`.   |
 | `-r`  | `--resume`    | Resume a specific session by UUID.                            |
 | `-a`  | `--all`       | Reopen the workspace tabs that were open at the end of the last run. |
+| `-l`  | `--list`      | List all stored sessions as a `SESSION WORKSPACE BRANCH DATE` table and exit. |
 | `-i`  | `--init`      | Interactively create `~/.orangu/orangu.conf` and exit (see the Configuration chapter). |
 | `-s`  | `--shell-completions` | Print the shell completion script for the detected shell (`$SHELL`; bash, zsh, or fish) and exit. |
 
@@ -88,6 +89,28 @@ orangu --resume 550e8400-e29b-41d4-a716-446655440000
 ```
 
 This restores the previous conversation context and per-session readline history.
+
+### Listing sessions
+
+To see every stored session without starting a run, pass `--list` (short form `-l`):
+
+```text
+orangu --list
+```
+
+This prints a table of all sessions, newest first, with the columns sized to the
+widest value in each:
+
+```text
+SESSION                               WORKSPACE           BRANCH         DATE
+550e8400-e29b-41d4-a716-446655440000  /home/user/project  main           2026-06-26 11:04
+6ba7b810-9dad-11d1-80b4-00c04fd430c8  /home/user/other    feature/login  2026-06-26 03:27
+```
+
+The `DATE` column is the session's last-updated timestamp (`YYYY-MM-DD HH:MM`).
+
+`orangu` then exits. To list and switch between sessions from inside a running
+session, use the `/session` command (see the Core tools chapter).
 
 ### Session cleanup on exit
 

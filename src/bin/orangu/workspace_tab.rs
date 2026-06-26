@@ -214,21 +214,16 @@ impl WorkspaceTab {
         Ok(())
     }
 
-    /// Finish this tab on exit: print its resume command, annotated with its
-    /// workspace and branch, or silently delete its session directory when the
-    /// session is ephemeral (no LLM interaction on `main`/`master` or outside a
-    /// Git repository). Run for every open tab so each one a run touched can be
-    /// resumed afterwards.
+    /// Finish this tab on exit: print its resume command, or silently delete its
+    /// session directory when the session is ephemeral (no LLM interaction on
+    /// `main`/`master` or outside a Git repository). Run for every open tab so
+    /// each one a run touched can be resumed afterwards.
     pub(crate) fn finish(&self) {
         let branch = self.current_branch.as_deref().unwrap_or("");
         if self.usage_stats.total_tokens == 0 && is_ephemeral_branch(branch) {
             delete_session_dir(&self.session_dir);
         } else {
-            eprintln!(
-                "orangu --resume {} ({}/{branch})",
-                self.session_id,
-                self.workspace.display()
-            );
+            eprintln!("orangu --resume {}", self.session_id);
         }
     }
 
