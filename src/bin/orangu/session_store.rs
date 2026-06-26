@@ -650,7 +650,11 @@ pub(crate) fn list_all_sessions_output() -> Result<String> {
         if !path.is_dir() {
             continue;
         }
-        let Some(uuid) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+        let Some(uuid) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         let meta = load_session_metadata(&path.join("metadata")).ok().flatten();
