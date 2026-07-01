@@ -167,9 +167,22 @@ fn print_shell_completions() -> Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
+fn main() -> ExitCode {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    let result = runtime.block_on(run());
+
+    // Background `spawn_blocking` work — the startup knowledge-graph scan,
+    // git sync/PR/issue-metadata fetches — may still be running when `run()`
+    // returns. Dropping the runtime normally blocks until every such task
+    // finishes, which on a large or slow-to-scan workspace can make quitting
+    // hang for a long time. Give it a brief grace period, then exit anyway;
+    // the OS reclaims the abandoned thread.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(500));
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
