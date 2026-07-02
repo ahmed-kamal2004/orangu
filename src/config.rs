@@ -39,9 +39,9 @@ pub struct ClientAppConfiguration {
     pub feedback: bool,
     pub auto_rebase: bool,
     pub auto_squash: bool,
+    pub compile_workers: usize,
     pub terminal: String,
     pub platform: String,
-    /// Where the workspace tab bar is drawn.
     pub workspaces: WorkspacePlacement,
     pub drop_down: bool,
 }
@@ -126,6 +126,13 @@ pub fn default_compression() -> bool {
     true
 }
 
+/// Default `/build` parallelism: `0`, meaning unused — no `-j`/`--jobs` flag is
+/// passed and each toolchain falls back to its own default (Cargo's own
+/// automatic parallelism, a bare serial `make`, ...).
+pub fn default_compile_workers() -> usize {
+    0
+}
+
 pub fn parse_feedback_bool(s: &str) -> bool {
     matches!(s.trim().to_lowercase().as_str(), "on" | "true" | "1")
 }
@@ -167,6 +174,7 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
         default_auto_downsample_lines,
     )?;
     let diff_file_cap = parse_client_field(&client, "diff_file_cap", default_diff_file_cap)?;
+    let compile_workers = parse_client_field(&client, "compile_workers", default_compile_workers)?;
     let system_prompt = client.get("system_prompt").cloned().unwrap_or_default();
 
     // `[orangu].model` is the general default model id; a server section's own
@@ -209,6 +217,7 @@ pub fn load_client_configuration(path: &Path) -> Result<ClientAppConfiguration> 
         auto_squash: parse_feedback_bool(
             client.get("auto_squash").map(String::as_str).unwrap_or(""),
         ),
+        compile_workers,
         terminal: client.get("terminal").cloned().unwrap_or_default(),
         platform: client.get("platform").cloned().unwrap_or_default(),
         workspaces,
@@ -530,6 +539,38 @@ mod tests {
         let conf = load_client_configuration(file.path()).unwrap();
         assert_eq!(conf.llms["a"].review_max_tokens, 2048);
         assert_eq!(conf.llms["a"].code_max_tokens, 4096);
+    }
+
+    #[test]
+    fn parses_compile_workers_with_default_and_override() {
+        // Absent key defaults to 0 (unused: no job flag is passed).
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.compile_workers, 0);
+
+        // An explicit 0 is accepted too, with the same meaning as the default.
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\ncompile_workers = 0\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.compile_workers, 0);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "[orangu]\nserver = a\ncompile_workers = 12\n\n[a]\nprovider = llama.cpp\nendpoint = http://x/v1\nmodel = m\n"
+        )
+        .unwrap();
+        let conf = load_client_configuration(file.path()).unwrap();
+        assert_eq!(conf.compile_workers, 12);
     }
 
     #[test]

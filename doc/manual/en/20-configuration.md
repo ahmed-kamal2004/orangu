@@ -104,6 +104,7 @@ code_max_tokens = 0
 | `max_tool_rounds` | No | Maximum tool-calling turns before the client aborts the prompt |
 | `review_max_tokens` | No | Response-token cap for each `/auto_review` request. Defaults to `512`; `0` disables the cap. Raise it (e.g. `2048`) when the review model thinks before answering |
 | `code_max_tokens` | No | Response-token cap for normal chat and tool responses. Defaults to `0` (no cap) |
+| `compile_workers` | No | Parallel job count `/build` passes to toolchains that support one (e.g. `make -j`, `meson compile -j`, `cargo --jobs`). Defaults to `0`, meaning unused: no job flag is passed and each toolchain falls back to its own default |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width in characters. Controls the layout canvas for `/show_file` output. Defaults to `512` |
 | `banner` | No | Horizontal placement of the banner. Defaults to `left`. Options: `left`, `center`, `right` |

@@ -25,8 +25,8 @@ use crate::quotes::QUOTE_OPTIONS;
 use anyhow::{Context, Result, anyhow};
 use orangu::{
     config::{
-        CLIENT_SECTION, DEFAULT_PLATFORM, default_code_max_tokens, default_drop_down,
-        default_llm_max_tool_rounds, default_review_max_tokens, default_timeout,
+        CLIENT_SECTION, DEFAULT_PLATFORM, default_code_max_tokens, default_compile_workers,
+        default_drop_down, default_llm_max_tool_rounds, default_review_max_tokens, default_timeout,
         default_virtual_width,
     },
     llm::normalized_openai_endpoint,
@@ -112,6 +112,7 @@ pub async fn run_init() -> Result<()> {
     let max_tool_rounds = prompt_number::<usize>("max_tool_rounds", default_llm_max_tool_rounds())?;
     let review_max_tokens = prompt_number::<u32>("review_max_tokens", default_review_max_tokens())?;
     let code_max_tokens = prompt_number::<u32>("code_max_tokens", default_code_max_tokens())?;
+    let compile_workers = prompt_number::<usize>("compile_workers", default_compile_workers())?;
     let quotes = prompt_with_options("quotes", "none", QUOTE_OPTIONS)?;
     let width = prompt_number::<usize>("width", default_virtual_width())?;
     let banner = prompt_with_options("banner", "left", BANNER_OPTIONS)?;
@@ -143,6 +144,9 @@ pub async fn run_init() -> Result<()> {
     }
     if code_max_tokens != default_code_max_tokens() {
         client.push(format!("code_max_tokens = {code_max_tokens}"));
+    }
+    if compile_workers != default_compile_workers() {
+        client.push(format!("compile_workers = {compile_workers}"));
     }
     if quotes != "none" {
         client.push(format!("quotes = {quotes}"));

@@ -32,6 +32,7 @@ compression = on
 | `max_tool_rounds` | No | Maximum tool-calling turns per prompt. Defaults to `10` |
 | `review_max_tokens` | No | Response-token cap for each `/auto_review` request. Defaults to `512`; `0` disables the cap. Raise it (e.g. `2048`) when the review model thinks before answering |
 | `code_max_tokens` | No | Response-token cap for normal chat and tool responses. Defaults to `0` (no cap) |
+| `compile_workers` | No | Parallel job count `/build` passes to toolchains that support one (e.g. `make -j`, `meson compile -j`, `cargo --jobs`). Defaults to `0`, meaning unused: no job flag is passed and each toolchain falls back to its own default |
 | `compression` | No | Enable orangu's built-in compression layer. This provides context deduplication, file read stubbing, and advanced shell output compression (handles `cargo`, `ls`, `grep`/`rg`, `npm`/`yarn`/`pip`, and diff truncations). Defaults to `on`. Options: `on`, `true`, `1`, `off`, `false`, `0` |
 | `quotes` | No | Quote set shown while the model is thinking. Defaults to `none`. Options: `none`, `star_trek`, `star_wars`, `marco_pierre_white`, `gordon_ramsay`, `calvin_and_hobbes`, `sun_tzu_mandarin`, `sun_tzu_english`, `attila_the_hun`, `all` |
 | `width` | No | Virtual terminal width for the output canvas. Source lines from `/show_file` are laid out at this width and can be panned horizontally. Defaults to `512` |

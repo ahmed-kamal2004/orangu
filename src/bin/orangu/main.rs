@@ -1057,6 +1057,7 @@ async fn run() -> Result<()> {
                 virtual_width: viewport.virtual_width,
                 auto_rebase: config.auto_rebase,
                 auto_squash: config.auto_squash,
+                compile_workers: config.compile_workers,
                 compression: config.compression,
                 terminal: &config.terminal,
                 forge,

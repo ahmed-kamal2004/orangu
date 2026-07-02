@@ -51,15 +51,20 @@ impl BuildProfile {
     }
 }
 
-pub fn build_output(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+pub fn build_output(
+    workspace: &Path,
+    profile: BuildProfile,
+    compile_workers: usize,
+    sink: &BuildSink,
+) -> Result<()> {
     if workspace.join("Cargo.toml").exists() {
-        rust_build(workspace, profile, sink)
+        rust_build(workspace, profile, compile_workers, sink)
     } else if workspace.join("CMakeLists.txt").exists() {
-        cmake_build(workspace, profile, sink)
+        cmake_build(workspace, profile, compile_workers, sink)
     } else if workspace.join("configure").exists() {
-        autotools_build(workspace, profile, sink)
+        autotools_build(workspace, profile, compile_workers, sink)
     } else if workspace.join("meson.build").exists() {
-        meson_build(workspace, profile, sink)
+        meson_build(workspace, profile, compile_workers, sink)
     } else if workspace.join("pom.xml").exists() {
         java_build(workspace, profile, sink)
     } else if workspace.join("pyproject.toml").exists()
@@ -153,7 +158,12 @@ impl<'a> BuildSteps<'a> {
     }
 }
 
-fn rust_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+fn rust_build(
+    workspace: &Path,
+    profile: BuildProfile,
+    compile_workers: usize,
+    sink: &BuildSink,
+) -> Result<()> {
     let mut steps = BuildSteps::new(sink);
     steps.run("cargo fmt", make_cmd("cargo", &["fmt"], workspace))?;
     steps.run("cargo clippy", make_cmd("cargo", &["clippy"], workspace))?;
@@ -162,12 +172,21 @@ fn rust_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Resu
         BuildProfile::Debug => &[],
         BuildProfile::Release => &["--release"],
     };
+    // `0` means unused: omit the flag entirely and let Cargo pick its own
+    // (already-parallel) default rather than forcing a job count on it.
+    let jobs_arg = (compile_workers > 0).then(|| format!("--jobs={compile_workers}"));
     let mut build_args = vec!["build"];
     build_args.extend_from_slice(release_flag);
+    if let Some(arg) = jobs_arg.as_deref() {
+        build_args.push(arg);
+    }
     steps.run("cargo build", make_cmd("cargo", &build_args, workspace))?;
 
     let mut test_args = vec!["test"];
     test_args.extend_from_slice(release_flag);
+    if let Some(arg) = jobs_arg.as_deref() {
+        test_args.push(arg);
+    }
     steps.run("cargo test", make_cmd("cargo", &test_args, workspace))?;
     Ok(())
 }
@@ -232,7 +251,12 @@ fn cmake_cached_build_type(build_dir: &Path) -> Option<String> {
 /// profile switch. It only reruns when the cached build type differs from
 /// the requested one, so repeat `/build`s in the same profile skip straight
 /// to `make`.
-fn cmake_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+fn cmake_build(
+    workspace: &Path,
+    profile: BuildProfile,
+    compile_workers: usize,
+    sink: &BuildSink,
+) -> Result<()> {
     let mut steps = BuildSteps::new(sink);
     c_format(workspace, &mut steps)?;
 
@@ -254,7 +278,13 @@ fn cmake_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Res
         )?;
     }
 
-    steps.run("make", make_cmd("make", &[], &build_dir))?;
+    // `0` means unused: run a bare `make`, its own (serial) default.
+    let jobs_arg = (compile_workers > 0).then(|| format!("-j{compile_workers}"));
+    let mut make_args: Vec<&str> = Vec::new();
+    if let Some(arg) = jobs_arg.as_deref() {
+        make_args.push(arg);
+    }
+    steps.run("make", make_cmd("make", &make_args, &build_dir))?;
 
     Ok(())
 }
@@ -267,7 +297,12 @@ fn cmake_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Res
 /// profile; switching profiles reconfigures that same directory with `meson
 /// configure`, which is a cheap no-op when the profile is unchanged and
 /// triggers the right incremental rebuild when it isn't.
-fn meson_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+fn meson_build(
+    workspace: &Path,
+    profile: BuildProfile,
+    compile_workers: usize,
+    sink: &BuildSink,
+) -> Result<()> {
     let mut steps = BuildSteps::new(sink);
     c_format(workspace, &mut steps)?;
     clean_stale_autotools_build(workspace, &mut steps)?;
@@ -290,10 +325,15 @@ fn meson_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Res
         )?;
     }
 
-    steps.run(
-        "meson compile",
-        make_cmd("meson", &["compile", "-C", "build"], workspace),
-    )?;
+    // `0` means unused: omit `-j` and let `meson compile` fall back to its
+    // own (ninja) default.
+    let jobs_arg = compile_workers.to_string();
+    let mut compile_args = vec!["compile", "-C", "build"];
+    if compile_workers > 0 {
+        compile_args.push("-j");
+        compile_args.push(&jobs_arg);
+    }
+    steps.run("meson compile", make_cmd("meson", &compile_args, workspace))?;
 
     Ok(())
 }
@@ -306,7 +346,12 @@ fn meson_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Res
 /// producing confusing failures unrelated to the actual code). So instead of
 /// building alongside any existing configuration, wipe it with `make
 /// distclean` first, then reconfigure from scratch for the requested profile.
-fn autotools_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+fn autotools_build(
+    workspace: &Path,
+    profile: BuildProfile,
+    compile_workers: usize,
+    sink: &BuildSink,
+) -> Result<()> {
     let mut steps = BuildSteps::new(sink);
     c_format(workspace, &mut steps)?;
     clean_stale_autotools_build(workspace, &mut steps)?;
@@ -328,7 +373,13 @@ fn autotools_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) ->
         ),
     )?;
 
-    steps.run("make", make_cmd("make", &[], workspace))?;
+    // `0` means unused: run a bare `make`, its own (serial) default.
+    let jobs_arg = (compile_workers > 0).then(|| format!("-j{compile_workers}"));
+    let mut make_args: Vec<&str> = Vec::new();
+    if let Some(arg) = jobs_arg.as_deref() {
+        make_args.push(arg);
+    }
+    steps.run("make", make_cmd("make", &make_args, workspace))?;
 
     Ok(())
 }
