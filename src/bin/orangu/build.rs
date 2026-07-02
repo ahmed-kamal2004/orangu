@@ -55,12 +55,16 @@ pub fn build_output(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -
     if workspace.join("Cargo.toml").exists() {
         rust_build(workspace, profile, sink)
     } else if workspace.join("CMakeLists.txt").exists() {
-        c_build(workspace, profile, sink)
+        cmake_build(workspace, profile, sink)
+    } else if workspace.join("configure").exists() {
+        autotools_build(workspace, profile, sink)
+    } else if workspace.join("meson.build").exists() {
+        meson_build(workspace, profile, sink)
     } else if workspace.join("pom.xml").exists() {
         java_build(workspace, profile, sink)
     } else {
         Err(anyhow!(
-            "no supported project found (expected Cargo.toml, CMakeLists.txt, or pom.xml)"
+            "no supported project found (expected Cargo.toml, CMakeLists.txt, configure, meson.build, or pom.xml)"
         ))
     }
 }
@@ -161,15 +165,42 @@ fn rust_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Resu
     Ok(())
 }
 
-fn c_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
-    let mut steps = BuildSteps::new(sink);
-
+fn c_format(workspace: &Path, steps: &mut BuildSteps) -> Result<()> {
     if workspace.join("clang-format.sh").exists() {
         steps.run(
             "clang-format.sh",
             make_cmd("bash", &["clang-format.sh"], workspace),
         )?;
     }
+    Ok(())
+}
+
+/// If the workspace root has an in-place `./configure`-style build, wipe it
+/// with `make distclean`. Both a VPATH Autotools build and a Meson build of
+/// the same source tree conflict with a pre-existing in-tree Autotools
+/// configuration — PostgreSQL's own `meson.build` checks for exactly this and
+/// refuses to proceed otherwise — so it is cleaned up first rather than left
+/// to fail confusingly (or not fail at all, and silently mix stale state in).
+///
+/// Detected via `config.status` or a generated `GNUmakefile`, never a bare
+/// `Makefile`: some projects (PostgreSQL included) check in a portable
+/// `Makefile` stub that just re-execs GNU make, so its mere presence doesn't
+/// mean `configure` has ever been run — and running `make distclean` against
+/// that stub before configuring fails outright ("You need to run the
+/// 'configure' program first").
+fn clean_stale_autotools_build(workspace: &Path, steps: &mut BuildSteps) -> Result<()> {
+    if workspace.join("config.status").exists() || workspace.join("GNUmakefile").exists() {
+        steps.run(
+            "make distclean",
+            make_cmd("make", &["distclean"], workspace),
+        )?;
+    }
+    Ok(())
+}
+
+fn cmake_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
+    c_format(workspace, &mut steps)?;
 
     // Each profile gets its own build directory so switching between debug
     // and release never reconfigures an existing CMakeCache.txt with a
@@ -193,6 +224,80 @@ fn c_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<
     }
 
     steps.run("make", make_cmd("make", &[], &build_dir))?;
+
+    Ok(())
+}
+
+/// Meson projects (a `meson.build` at the workspace root, no `CMakeLists.txt`
+/// or `configure` — Autotools takes priority when a project has both, e.g.
+/// PostgreSQL mid-migration). Meson cannot build in place — it refuses to let
+/// the build directory equal the source directory — so it gets a single
+/// reused `build/` directory (Meson's own convention) rather than one per
+/// profile; switching profiles reconfigures that same directory with `meson
+/// configure`, which is a cheap no-op when the profile is unchanged and
+/// triggers the right incremental rebuild when it isn't.
+fn meson_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
+    c_format(workspace, &mut steps)?;
+    clean_stale_autotools_build(workspace, &mut steps)?;
+
+    let buildtype = match profile {
+        BuildProfile::Debug => "debug",
+        BuildProfile::Release => "release",
+    };
+    let buildtype_arg = format!("--buildtype={buildtype}");
+
+    if !workspace.join("build").join("build.ninja").exists() {
+        steps.run(
+            "meson setup",
+            make_cmd("meson", &["setup", "build", &buildtype_arg], workspace),
+        )?;
+    } else {
+        steps.run(
+            "meson configure",
+            make_cmd("meson", &["configure", "build", &buildtype_arg], workspace),
+        )?;
+    }
+
+    steps.run(
+        "meson compile",
+        make_cmd("meson", &["compile", "-C", "build"], workspace),
+    )?;
+
+    Ok(())
+}
+
+/// Autotools projects (a `configure` script at the workspace root, no
+/// `CMakeLists.txt`). Built in place, like a plain `./configure && make`:
+/// autotools has no separate build-type flag, and an out-of-tree VPATH build
+/// does not mix safely with an in-tree one (GNU Make's VPATH search can pick
+/// up stale headers/objects from whichever configuration is lying around,
+/// producing confusing failures unrelated to the actual code). So instead of
+/// building alongside any existing configuration, wipe it with `make
+/// distclean` first, then reconfigure from scratch for the requested profile.
+fn autotools_build(workspace: &Path, profile: BuildProfile, sink: &BuildSink) -> Result<()> {
+    let mut steps = BuildSteps::new(sink);
+    c_format(workspace, &mut steps)?;
+    clean_stale_autotools_build(workspace, &mut steps)?;
+
+    let opt_flags = match profile {
+        BuildProfile::Debug => "-g -O0",
+        BuildProfile::Release => "-O2",
+    };
+    let cflags_arg = format!("CFLAGS={opt_flags}");
+    let cxxflags_arg = format!("CXXFLAGS={opt_flags}");
+    // Invoked via `sh` rather than executed directly so a missing executable
+    // bit on the checked-in script doesn't matter.
+    steps.run(
+        "configure",
+        make_cmd(
+            "sh",
+            &["./configure", &cflags_arg, &cxxflags_arg],
+            workspace,
+        ),
+    )?;
+
+    steps.run("make", make_cmd("make", &[], workspace))?;
 
     Ok(())
 }
